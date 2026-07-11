@@ -36,6 +36,7 @@ Inside the fzf window:
 | --- | --- |
 | type | Filter the process list in real time |
 | `Tab` | Select multiple processes (optional) |
+| `Ctrl-R` | Refresh the process list (keeps your current query/selection) |
 | `Enter` | Kill the selected processes, or the line under the cursor if none are selected |
 | `Ctrl-C` / `Esc` | Abort without killing anything |
 
@@ -51,6 +52,7 @@ Each result is reported as `killed:` or `failed:` (e.g. no permission, process a
 
 - The default signal is `SIGKILL` (`kill -9`), which terminates processes immediately without giving them a chance to clean up. Use `KIL_SIGNAL=15` for a graceful shutdown.
 - `kil` excludes itself and the `fzf` process from the list so you don't kill your own session.
+- The process list is a snapshot taken when `kil` starts; press `Ctrl-R` to refresh it if processes have appeared, exited, or changed while you were filtering.
 
 ## License
 

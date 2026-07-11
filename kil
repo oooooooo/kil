@@ -27,7 +27,8 @@ list_processes() {
 selected=$(list_processes | fzf \
   --query="$QUERY" \
   --multi \
-  --header "kil: type to filter, Tab to multi-select (optional), Enter to kill -${SIGNAL} selected/current line (Ctrl-C to abort)" \
+  --header "kil: type to filter, Tab to multi-select (optional), Ctrl-R to refresh, Enter to kill -${SIGNAL} selected/current line (Ctrl-C to abort)" \
+  --bind "ctrl-r:reload(command ps -A -o pid=,ppid=,user=,comm=,args= | awk -v self=$SELF_PID -v selfname=$SELF_NAME '\$1 != self && \$4 != \"fzf\" && \$4 != selfname')" \
   || true)
 
 if [ -z "$selected" ]; then

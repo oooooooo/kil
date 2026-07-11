@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# kil: filter processes in real time with fzf, then kill the selected lines
+# (Tab to select multiple) by pressing Enter.
+# If nothing is selected, Enter kills the line under the cursor.
+#
+# Usage:
+#   kil [query]         # start with an initial query
+#   KIL_SIGNAL=15 kil   # use kill -15 (SIGTERM) instead of the default 9 (SIGKILL)
+set -euo pipefail
+
+if ! command -v fzf >/dev/null 2>&1; then
+  echo "kil: fzf not found (install it, e.g. brew install fzf)" >&2
+  exit 1
+fi
+
+SIGNAL="${KIL_SIGNAL:-9}"
+QUERY="${1:-}"
+SELF_PID=$$
+SELF_NAME=$(basename "$0")
+
+list_processes() {
+  command ps -eo pid,ppid,user,comm,args --no-headers \
+    | awk -v self="$SELF_PID" -v selfname="$SELF_NAME" \
+        '$1 != self && $4 != "fzf" && $4 != selfname'
+}
+
+selected=$(list_processes | fzf \
+  --query="$QUERY" \
+  --multi \
+  --header "kil: type to filter, Tab to multi-select (optional), Enter to kill -${SIGNAL} selected/current line (Ctrl-C to abort)" \
+  || true)
+
+if [ -z "$selected" ]; then
+  echo "kil: nothing selected" >&2
+  exit 0
+fi
+
+echo "$selected" | while IFS= read -r line; do
+  pid=$(awk '{print $1}' <<< "$line")
+  [ -n "$pid" ] || continue
+  if kill "-${SIGNAL}" "$pid" 2>/dev/null; then
+    echo "killed: $line"
+  else
+    echo "failed:  $line" >&2
+  fi
+done

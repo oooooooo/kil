@@ -19,7 +19,7 @@ SELF_PID=$$
 SELF_NAME=$(basename "$0")
 
 list_processes() {
-  command ps -eo pid,ppid,user,comm,args --no-headers \
+  command ps -A -o pid=,ppid=,user=,comm=,args= \
     | awk -v self="$SELF_PID" -v selfname="$SELF_NAME" \
         '$1 != self && $4 != "fzf" && $4 != selfname'
 }

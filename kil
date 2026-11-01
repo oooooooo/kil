@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # kil: filter processes in real time with fzf, then send a signal (SIGKILL by
-# default) to the selected lines (Tab to select multiple) by pressing Enter.
+# default) to the selected lines (Tab to select, Ctrl-A to select every line
+# shown) by pressing Enter.
 # If nothing is selected, Enter signals the line under the cursor.
 set -euo pipefail
 
@@ -21,7 +22,7 @@ Environment:
 Exit status:
   0    every selected process was signalled
   1    nothing was selected, or some processes were skipped or failed
-  2    usage error, invalid KIL_SIGNAL, or fzf failed
+  2    usage error, invalid KIL_SIGNAL, listing processes failed, or fzf failed
   130  aborted with Ctrl-C / Esc
 EOF
 }
@@ -52,17 +53,29 @@ if ! command -v fzf >/dev/null 2>&1; then
 fi
 
 SIGNAL="${KIL_SIGNAL:-9}"
+invalid_signal() {
+  echo "kil: invalid KIL_SIGNAL: '$SIGNAL' (use a number like 15 or a name like TERM)" >&2
+  exit 2
+}
 # Reject a leading "-" before asking `kill -l`, which would otherwise parse it
 # as an option (e.g. "-9" makes it list every signal and succeed), and so would
 # `kill` itself later.
-if ! [[ "$SIGNAL" =~ ^[A-Za-z0-9+]+$ ]] || ! kill -l "$SIGNAL" >/dev/null 2>&1; then
-  echo "kil: invalid KIL_SIGNAL: '$SIGNAL' (use a number like 15 or a name like TERM)" >&2
-  exit 2
+if ! [[ "$SIGNAL" =~ ^[A-Za-z0-9][A-Za-z0-9+-]*$ ]] || ! kill -l "$SIGNAL" >/dev/null 2>&1; then
+  invalid_signal
 fi
 if [[ "$SIGNAL" =~ ^[0-9]+$ ]]; then
   signum=$SIGNAL
+  # `kill -l` also decodes exit statuses (137 -> KILL), which `kill -s`
+  # then rejects, so require the number to round-trip through its name.
+  [ "$(kill -l "$(kill -l "$signum")")" = "$signum" ] || invalid_signal
 else
   signum=$(kill -l "$SIGNAL")
+fi
+# bash numbers its trap-only pseudo-signals (DEBUG, ERR, RETURN) from NSIG
+# up; `kill -l` accepts them but `kill -s` does not.
+nsig=$(kill -l DEBUG 2>/dev/null || true)
+if [[ "$nsig" =~ ^[0-9]+$ ]] && [ "$signum" -ge "$nsig" ]; then
+  invalid_signal
 fi
 if [ "$signum" = 0 ]; then
   SIGNAL_LABEL="signal 0"
@@ -93,10 +106,29 @@ END {
   }
 }'
 
+# A failed ps means the list may be incomplete, so kil refuses to signal from
+# it. fzf runs the Ctrl-R reload in /bin/sh, out of reach of this script's
+# exit-status checks (and without pipefail), so both the initial list and the
+# reload report a ps failure by sending SIGUSR1 to this script. A signal is
+# used rather than a marker file because it cannot be lost to an unwritable
+# or full disk, which would let the failure go unnoticed.
+# ps cannot die of SIGPIPE here because awk reads all input before printing.
+list_failed=0
+trap 'list_failed=1' USR1
+# A non-interactive bash cannot trap a signal that was ignored when it
+# started, so if the parent ignores SIGUSR1 the trap above is silently
+# inert and failures would go unnoticed. Probe it with a signal to ourselves.
+kill -s USR1 "$$"
+if [ "$list_failed" != 1 ]; then
+  echo "kil: cannot catch SIGUSR1 (ignored by the parent process?); refusing to run" >&2
+  exit 2
+fi
+list_failed=0
+
 # Values are passed through the environment rather than interpolated, so the
 # command needs no quoting when fzf runs it for Ctrl-R.
 # shellcheck disable=SC2016 # expanded later by the shell that runs it
-LIST_CMD='command ps -A -o pid=,ppid=,user=,comm=,args= | awk -v self="$KIL_SELF_PID" "$KIL_FILTER_AWK"'
+LIST_CMD='{ command ps -A -o pid=,ppid=,user=,comm=,args= || kill -s USR1 "$KIL_SELF_PID"; } | awk -v self="$KIL_SELF_PID" "$KIL_FILTER_AWK"'
 
 # The user's fzf defaults are ignored on purpose: options such as --read0
 # (the whole list becomes one item, so every process gets signalled),
@@ -125,18 +157,24 @@ if echo x | run_fzf --id-nth=.. --filter=x >/dev/null 2>&1; then
   TRACK_OPTS=(--track --id-nth=..)
 fi
 
-# fzf's own status is taken from PIPESTATUS: under pipefail, the producer can
-# die of SIGPIPE when fzf exits first, which would otherwise mask fzf's status.
+# fzf's status is taken from PIPESTATUS: under pipefail, the producer can die
+# of SIGPIPE when fzf exits first, which would otherwise mask fzf's status.
 status=0
 selected=$(
   eval "$LIST_CMD" | run_fzf \
     --query="$QUERY" \
     --multi \
     ${TRACK_OPTS[@]+"${TRACK_OPTS[@]}"} \
-    --header "kil: type to filter, Tab to multi-select (optional), Ctrl-R to refresh, Enter to send ${SIGNAL_LABEL} to selected/current line (Ctrl-C to abort)" \
+    --header "kil: type to filter, Tab to select, Ctrl-A to select all shown, Ctrl-R to refresh, Enter to send ${SIGNAL_LABEL} to selected/current line (Ctrl-C to abort)" \
+    --bind "ctrl-a:select-all" \
     --bind "ctrl-r:$RELOAD_ACTION:$LIST_CMD"
   exit "${PIPESTATUS[1]}"
 ) || status=$?
+
+if [ "$list_failed" = 1 ]; then
+  echo "kil: failed to list processes (ps failed); nothing was signalled" >&2
+  exit 2
+fi
 
 case "$status" in
   0) ;;

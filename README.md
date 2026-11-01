@@ -39,9 +39,10 @@ Inside the fzf window:
 | --- | --- |
 | type | Filter the process list in real time |
 | `Tab` | Select multiple processes (optional) |
+| `Ctrl-A` | Select every process currently shown by the filter |
 | `Ctrl-R` | Refresh the process list, keeping your query and `Tab` selections (selections are kept only if your fzf supports `--id-nth`) |
 | `Enter` | Kill the selected processes, or the line under the cursor if none are selected |
-| `Ctrl-C` / `Esc` | Abort without killing anything |
+| `Ctrl-C` / `Esc` | Abort without killing anything (while a `Ctrl-R` refresh is still restoring selections, the first press only cancels the refresh; press again to abort) |
 
 Each result is reported as `sent SIGKILL:` (or whichever signal you chose), `skipped:`, or `failed:` (e.g. no permission).
 
@@ -51,7 +52,7 @@ Each result is reported as `sent SIGKILL:` (or whichever signal you chose), `ski
 | --- | --- |
 | `0` | Every selected process was signalled |
 | `1` | Nothing was selected, or some processes were skipped or failed |
-| `2` | Usage error, invalid `KIL_SIGNAL`, or fzf failed (e.g. no terminal) |
+| `2` | Usage error, invalid `KIL_SIGNAL`, listing processes failed (or could not be monitored), or fzf failed (e.g. no terminal) |
 | `130` | Aborted with `Ctrl-C` / `Esc` |
 
 ## Configuration

@@ -10,6 +10,10 @@ Ideally:
 kil <string>
 ```
 
-filters the process list in real time, and pressing Enter kills every process shown on screen.
+filters the process list in real time, and I can kill every process shown on screen at once.
 
 Using fzf is fine, and so is writing it from scratch in Go.
+
+## Decisions
+
+- Killing everything shown is done with `Ctrl-A` (select all shown) followed by `Enter`, not with `Enter` alone. `Enter` only signals the selected lines, or the cursor line when nothing is selected, so that pressing `Enter` mid-filter cannot kill a large, unintended set of processes.

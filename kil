@@ -15,20 +15,36 @@ fi
 
 SIGNAL="${KIL_SIGNAL:-9}"
 QUERY="${1:-}"
-SELF_PID=$$
-SELF_NAME=$(basename "$0")
 
-list_processes() {
-  command ps -A -o pid=,ppid=,user=,comm=,args= \
-    | awk -v self="$SELF_PID" -v selfname="$SELF_NAME" \
-        '$1 != self && $4 != "fzf" && $4 != selfname'
+# Passed through the environment rather than interpolated into the reload
+# command, so a script name containing shell metacharacters cannot inject
+# commands when Ctrl-R runs the list command via $SHELL.
+export KIL_SELF_PID=$$
+KIL_SELF_NAME=$(basename "$0")
+export KIL_SELF_NAME
+
+PS_CMD='command ps -A -o pid=,ppid=,user=,comm=,args='
+# shellcheck disable=SC2016 # expanded later by the shell that runs it
+FILTER_CMD='awk -v self="$KIL_SELF_PID" -v selfname="$KIL_SELF_NAME" '\''$1 != self && $4 != "fzf" && $4 != selfname'\'
+LIST_CMD="$PS_CMD | $FILTER_CMD"
+
+# Collapse runs of whitespace so lines from `ps -A` and `ps -p` compare equal
+# even if column padding differs.
+normalize() {
+  awk '{$1 = $1; print}'
 }
 
-selected=$(list_processes | fzf \
+# The --no-* flags override options a user may have in FZF_DEFAULT_OPTS that
+# would add non-process lines (the query, the pressed key) or change the
+# delimiter; otherwise a query such as "-1" could be read as a PID.
+selected=$(eval "$LIST_CMD" | fzf \
   --query="$QUERY" \
   --multi \
+  --no-print-query \
+  --no-expect \
+  --no-print0 \
   --header "kil: type to filter, Tab to multi-select (optional), Ctrl-R to refresh, Enter to kill -${SIGNAL} selected/current line (Ctrl-C to abort)" \
-  --bind "ctrl-r:reload(command ps -A -o pid=,ppid=,user=,comm=,args= | awk -v self=$SELF_PID -v selfname=$SELF_NAME '\$1 != self && \$4 != \"fzf\" && \$4 != selfname')" \
+  --bind "ctrl-r:reload($LIST_CMD)" \
   || true)
 
 if [ -z "$selected" ]; then
@@ -36,12 +52,24 @@ if [ -z "$selected" ]; then
   exit 0
 fi
 
-echo "$selected" | while IFS= read -r line; do
+while IFS= read -r line; do
   pid=$(awk '{print $1}' <<< "$line")
-  [ -n "$pid" ] || continue
+  # Only positive integers: 0 and negative values make kill signal whole
+  # process groups (-1 means every process the user can signal).
+  if ! [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+    echo "skipped: not a PID: $line" >&2
+    continue
+  fi
+  # The list is a snapshot; if the process exited meanwhile, its PID may have
+  # been reused by an unrelated process, so re-check it is still the same one.
+  current=$(command ps -p "$pid" -o pid=,ppid=,user=,comm=,args= 2>/dev/null | normalize || true)
+  if [ "$current" != "$(normalize <<< "$line")" ]; then
+    echo "skipped: process changed or exited: $line" >&2
+    continue
+  fi
   if kill "-${SIGNAL}" "$pid" 2>/dev/null; then
     echo "killed: $line"
   else
     echo "failed:  $line" >&2
   fi
-done
+done <<< "$selected"

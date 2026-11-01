@@ -1,32 +1,111 @@
 #!/usr/bin/env bash
-# kil: filter processes in real time with fzf, then kill the selected lines
-# (Tab to select multiple) by pressing Enter.
-# If nothing is selected, Enter kills the line under the cursor.
-#
-# Usage:
-#   kil [query]         # start with an initial query
-#   KIL_SIGNAL=15 kil   # use kill -15 (SIGTERM) instead of the default 9 (SIGKILL)
+# kil: filter processes in real time with fzf, then send a signal (SIGKILL by
+# default) to the selected lines (Tab to select multiple) by pressing Enter.
+# If nothing is selected, Enter signals the line under the cursor.
 set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: kil [--] [query...]
+
+Filter processes interactively with fzf and send a signal to the selected ones.
+All arguments are joined with spaces into the initial fzf query.
+
+Options:
+  -h, --help   Show this help and exit
+  --           Treat the remaining arguments as the query (e.g. kil -- -zsh)
+
+Environment:
+  KIL_SIGNAL   Signal number or name to send (default: 9, i.e. SIGKILL)
+
+Exit status:
+  0    every selected process was signalled
+  1    nothing was selected, or some processes were skipped or failed
+  2    usage error, invalid KIL_SIGNAL, or fzf failed
+  130  aborted with Ctrl-C / Esc
+EOF
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -?*)
+      echo "kil: unknown option: $1 (use 'kil -- $1' to search for it)" >&2
+      usage >&2
+      exit 2
+      ;;
+    *) break ;;
+  esac
+done
+QUERY="$*"
 
 if ! command -v fzf >/dev/null 2>&1; then
   echo "kil: fzf not found (install it, e.g. brew install fzf)" >&2
-  exit 1
+  exit 2
 fi
 
 SIGNAL="${KIL_SIGNAL:-9}"
-QUERY="${1:-}"
+# Reject a leading "-" before asking `kill -l`, which would otherwise parse it
+# as an option (e.g. "-9" makes it list every signal and succeed), and so would
+# `kill` itself later.
+if ! [[ "$SIGNAL" =~ ^[A-Za-z0-9+]+$ ]] || ! kill -l "$SIGNAL" >/dev/null 2>&1; then
+  echo "kil: invalid KIL_SIGNAL: '$SIGNAL' (use a number like 15 or a name like TERM)" >&2
+  exit 2
+fi
+if [[ "$SIGNAL" =~ ^[0-9]+$ ]]; then
+  signum=$SIGNAL
+else
+  signum=$(kill -l "$SIGNAL")
+fi
+if [ "$signum" = 0 ]; then
+  SIGNAL_LABEL="signal 0"
+else
+  SIGNAL_LABEL="SIG$(kill -l "$signum")"
+fi
 
-# Passed through the environment rather than interpolated into the reload
-# command, so a script name containing shell metacharacters cannot inject
-# commands when Ctrl-R runs the list command via $SHELL.
+# Hide only this kil invocation and its descendants (its command-substitution
+# subshell, fzf, ps/awk, and the shell fzf spawns for Ctrl-R). Matching by
+# name instead would hide every fzf on the system, and would miss kil itself
+# because `env bash` makes its comm "bash".
+# The whole table is read before walking parents because ps does not
+# guarantee parents are listed first; the step cap guards against PPID cycles
+# in a snapshot taken while processes are exiting.
 export KIL_SELF_PID=$$
-KIL_SELF_NAME=$(basename "$0")
-export KIL_SELF_NAME
+# shellcheck disable=SC2016 # awk program; $0, $1, $2 are awk fields
+export KIL_FILTER_AWK='
+{ n++; line[n] = $0; pid[n] = $1; parent[$1] = $2 }
+END {
+  for (i = 1; i <= n; i++) {
+    p = pid[i]; hide = 0
+    for (steps = 0; steps < 10000 && p != 0; steps++) {
+      if (p == self) { hide = 1; break }
+      if (!(p in parent)) break
+      p = parent[p]
+    }
+    if (!hide) print line[i]
+  }
+}'
 
-PS_CMD='command ps -A -o pid=,ppid=,user=,comm=,args='
+# Values are passed through the environment rather than interpolated, so the
+# command needs no quoting when fzf runs it for Ctrl-R.
 # shellcheck disable=SC2016 # expanded later by the shell that runs it
-FILTER_CMD='awk -v self="$KIL_SELF_PID" -v selfname="$KIL_SELF_NAME" '\''$1 != self && $4 != "fzf" && $4 != selfname'\'
-LIST_CMD="$PS_CMD | $FILTER_CMD"
+LIST_CMD='command ps -A -o pid=,ppid=,user=,comm=,args= | awk -v self="$KIL_SELF_PID" "$KIL_FILTER_AWK"'
+
+# The user's fzf defaults are ignored on purpose: options such as --read0
+# (the whole list becomes one item, so every process gets signalled),
+# --filter (no Enter needed), --print-query or --accept-nth change what fzf
+# prints, and kil treats that output as PIDs. SHELL is pinned so Ctrl-R does
+# not depend on aliases or functions from the user's shell startup files.
+run_fzf() {
+  FZF_DEFAULT_OPTS='' FZF_DEFAULT_OPTS_FILE='' SHELL=/bin/sh fzf "$@"
+}
 
 # Collapse runs of whitespace so lines from `ps -A` and `ps -p` compare equal
 # even if column padding differs.
@@ -34,42 +113,73 @@ normalize() {
   awk '{$1 = $1; print}'
 }
 
-# The --no-* flags override options a user may have in FZF_DEFAULT_OPTS that
-# would add non-process lines (the query, the pressed key) or change the
-# delimiter; otherwise a query such as "-1" could be read as a PID.
-selected=$(eval "$LIST_CMD" | fzf \
-  --query="$QUERY" \
-  --multi \
-  --no-print-query \
-  --no-expect \
-  --no-print0 \
-  --header "kil: type to filter, Tab to multi-select (optional), Ctrl-R to refresh, Enter to kill -${SIGNAL} selected/current line (Ctrl-C to abort)" \
-  --bind "ctrl-r:reload($LIST_CMD)" \
-  || true)
-
-if [ -z "$selected" ]; then
-  echo "kil: nothing selected" >&2
-  exit 0
+# Keep multi-selections across Ctrl-R. Rows are identified by the whole line,
+# not just the PID: if a selected process exits and its PID is reused before
+# the reload, a PID-only identity would carry the selection over to the new
+# process, and the pre-kill re-check would then pass against the new line.
+# Older fzf releases reject --id-nth outright, so only enable it when supported.
+RELOAD_ACTION=reload
+TRACK_OPTS=()
+if echo x | run_fzf --id-nth=.. --filter=x >/dev/null 2>&1; then
+  RELOAD_ACTION=reload-sync
+  TRACK_OPTS=(--track --id-nth=..)
 fi
 
+# fzf's own status is taken from PIPESTATUS: under pipefail, the producer can
+# die of SIGPIPE when fzf exits first, which would otherwise mask fzf's status.
+status=0
+selected=$(
+  eval "$LIST_CMD" | run_fzf \
+    --query="$QUERY" \
+    --multi \
+    ${TRACK_OPTS[@]+"${TRACK_OPTS[@]}"} \
+    --header "kil: type to filter, Tab to multi-select (optional), Ctrl-R to refresh, Enter to send ${SIGNAL_LABEL} to selected/current line (Ctrl-C to abort)" \
+    --bind "ctrl-r:$RELOAD_ACTION:$LIST_CMD"
+  exit "${PIPESTATUS[1]}"
+) || status=$?
+
+case "$status" in
+  0) ;;
+  1)
+    echo "kil: nothing selected" >&2
+    exit 1
+    ;;
+  130)
+    echo "kil: aborted" >&2
+    exit 130
+    ;;
+  *)
+    echo "kil: fzf failed (exit status $status)" >&2
+    exit 2
+    ;;
+esac
+
+problems=0
 while IFS= read -r line; do
   pid=$(awk '{print $1}' <<< "$line")
   # Only positive integers: 0 and negative values make kill signal whole
   # process groups (-1 means every process the user can signal).
   if ! [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
     echo "skipped: not a PID: $line" >&2
+    problems=1
     continue
   fi
   # The list is a snapshot; if the process exited meanwhile, its PID may have
   # been reused by an unrelated process, so re-check it is still the same one.
+  # This narrows the window but cannot close it: the PID can still change
+  # between this check and the kill below.
   current=$(command ps -p "$pid" -o pid=,ppid=,user=,comm=,args= 2>/dev/null | normalize || true)
   if [ "$current" != "$(normalize <<< "$line")" ]; then
     echo "skipped: process changed or exited: $line" >&2
+    problems=1
     continue
   fi
-  if kill "-${SIGNAL}" "$pid" 2>/dev/null; then
-    echo "killed: $line"
+  if kill -s "$SIGNAL" -- "$pid" 2>/dev/null; then
+    echo "sent ${SIGNAL_LABEL}: $line"
   else
-    echo "failed:  $line" >&2
+    echo "failed: $line" >&2
+    problems=1
   fi
 done <<< "$selected"
+
+exit "$problems"

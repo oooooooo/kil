@@ -28,6 +28,9 @@ install -m 755 kil ~/.local/bin/kil
 ```sh
 kil            # browse all processes
 kil node       # start with "node" as the initial query
+kil node dev   # arguments are joined into one query: "node dev"
+kil -- -zsh    # use -- when the query starts with "-"
+kil --help     # show usage
 ```
 
 Inside the fzf window:
@@ -36,25 +39,34 @@ Inside the fzf window:
 | --- | --- |
 | type | Filter the process list in real time |
 | `Tab` | Select multiple processes (optional) |
-| `Ctrl-R` | Refresh the process list (keeps your current query/selection) |
+| `Ctrl-R` | Refresh the process list, keeping your query and `Tab` selections (selections are kept only if your fzf supports `--id-nth`) |
 | `Enter` | Kill the selected processes, or the line under the cursor if none are selected |
 | `Ctrl-C` / `Esc` | Abort without killing anything |
 
-Each result is reported as `killed:` or `failed:` (e.g. no permission, process already gone).
+Each result is reported as `sent SIGKILL:` (or whichever signal you chose), `skipped:`, or `failed:` (e.g. no permission).
+
+### Exit status
+
+| Status | Meaning |
+| --- | --- |
+| `0` | Every selected process was signalled |
+| `1` | Nothing was selected, or some processes were skipped or failed |
+| `2` | Usage error, invalid `KIL_SIGNAL`, or fzf failed (e.g. no terminal) |
+| `130` | Aborted with `Ctrl-C` / `Esc` |
 
 ## Configuration
 
 | Environment variable | Default | Description |
 | --- | --- | --- |
-| `KIL_SIGNAL` | `9` (SIGKILL) | Signal to send. e.g. `KIL_SIGNAL=15 kil` sends SIGTERM |
+| `KIL_SIGNAL` | `9` (SIGKILL) | Signal number or name to send, e.g. `KIL_SIGNAL=15 kil` or `KIL_SIGNAL=TERM kil`. Invalid values are rejected. |
 
 ## Notes
 
 - The default signal is `SIGKILL` (`kill -9`), which terminates processes immediately without giving them a chance to clean up. Use `KIL_SIGNAL=15` for a graceful shutdown.
-- `kil` excludes itself and the `fzf` process from the list so you don't kill your own session.
+- `kil` hides only its own processes (itself, the `fzf` it started, and their children). Other `fzf` or `kil` sessions stay in the list and can be killed, and so do the shell you started `kil` from and `sudo`; be careful not to select those.
 - The process list is a snapshot taken when `kil` starts; press `Ctrl-R` to refresh it if processes have appeared, exited, or changed while you were filtering.
-- Before sending a signal, `kil` re-checks each selected PID. If the process has exited or its PID now belongs to a different process, `kil` reports it as `skipped:` instead of killing it.
-- `kil` overrides `--print-query`, `--expect`, and `--print0` from `FZF_DEFAULT_OPTS`, so only process lines are ever treated as PIDs.
+- Before sending a signal, `kil` re-checks that each selected PID still shows the same line in `ps`, and reports it as `skipped:` otherwise. This is best effort: it cannot tell apart a restarted process with the identical command line, and the PID can still change between the check and the signal.
+- `kil` ignores `FZF_DEFAULT_OPTS` and `FZF_DEFAULT_OPTS_FILE`, because options such as `--read0`, `--filter`, or `--print-query` change what fzf outputs, and `kil` treats that output as PIDs. Your usual fzf colors and key bindings therefore do not apply inside `kil`.
 
 ## License
 

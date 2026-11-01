@@ -1,14 +1,15 @@
 # kil
 
-今は kill -9 するのに ps | grep して kill -9 しています
+Currently, to `kill -9` a process, I run `ps | grep` and then `kill -9` by hand.
 
-プロセス番号や文字列で kill -8 する kill を使って
+I want a `kil` command that kills processes by PID or by matching string.
 
-理想は
+Ideally:
 
-kil 文字列
+```sh
+kil <string>
+```
 
-でリアルタイムに絞り込まれ、Enter を押すと、画面に出ているプロセスが全部消えることです
+filters the process list in real time, and pressing Enter kills every process shown on screen.
 
-fzf を使ってもいいですし、ゼロから go でも構いません
-
+Using fzf is fine, and so is writing it from scratch in Go.

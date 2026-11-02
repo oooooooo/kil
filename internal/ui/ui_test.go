@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/oooooooo/kil/internal/picker"
 )
@@ -18,6 +19,9 @@ func items(lines ...string) []picker.Item {
 	}
 	return out
 }
+
+// plain strips colors, so tests about content need not know the palette.
+func plain(view string) string { return ansi.Strip(view) }
 
 func noReload() ([]picker.Item, error) { return nil, nil }
 
@@ -55,7 +59,7 @@ func targetTexts(m Model) []string {
 func TestTypingFiltersTheView(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", noReload))
 	m, _ = press(m, typed("pyt"))
-	view := m.View()
+	view := plain(m.View())
 	if !strings.Contains(view, "202 python b") || strings.Contains(view, "101 node a") {
 		t.Errorf("view after typing \"pyt\":\n%s", view)
 	}
@@ -63,8 +67,8 @@ func TestTypingFiltersTheView(t *testing.T) {
 
 func TestInitialQueryIsApplied(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b"), "node", "SIGKILL", noReload))
-	if strings.Contains(m.View(), "202 python b") {
-		t.Errorf("initial query not applied:\n%s", m.View())
+	if strings.Contains(plain(m.View()), "202 python b") {
+		t.Errorf("initial query not applied:\n%s", plain(m.View()))
 	}
 }
 
@@ -83,7 +87,7 @@ func TestBackspaceAndCtrlUEditTheQuery(t *testing.T) {
 func TestSelectionStaysVisibleAfterQueryChange(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b"), "node", "SIGKILL", noReload))
 	m, _ = press(m, key(tea.KeyTab), key(tea.KeyCtrlU), typed("python"))
-	view := m.View()
+	view := plain(m.View())
 	if !strings.Contains(view, "101 node a") {
 		t.Errorf("selected node row is not shown after changing the query:\n%s", view)
 	}
@@ -91,7 +95,7 @@ func TestSelectionStaysVisibleAfterQueryChange(t *testing.T) {
 
 func TestEnterAcceptsTargets(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", noReload))
-	m, cmd := press(m, key(tea.KeyDown), key(tea.KeyEnter))
+	m, cmd := press(m, key(tea.KeyUp), key(tea.KeyEnter))
 	if m.Outcome() != Accepted {
 		t.Fatalf("Outcome() = %v, want Accepted", m.Outcome())
 	}
@@ -141,8 +145,8 @@ func TestCtrlRReloadsTheList(t *testing.T) {
 	}
 	next, _ := m.Update(cmd())
 	m = next.(Model)
-	if !strings.Contains(m.View(), "404 go d") {
-		t.Errorf("reloaded row not shown:\n%s", m.View())
+	if !strings.Contains(plain(m.View()), "404 go d") {
+		t.Errorf("reloaded row not shown:\n%s", plain(m.View()))
 	}
 }
 
@@ -165,9 +169,12 @@ func TestFailedReloadEndsWithoutTargets(t *testing.T) {
 }
 
 func TestHeaderNamesTheSignal(t *testing.T) {
-	m := sized(New(items("101 node a"), "", "SIGTERM", noReload))
-	if !strings.Contains(m.View(), "SIGTERM") {
-		t.Errorf("view does not name the signal:\n%s", m.View())
+	// The help text is the fzf-based kil's and needs a wide terminal to show
+	// the signal, as it did there.
+	next, _ := New(items("101 node a"), "", "SIGTERM", noReload).Update(tea.WindowSizeMsg{Width: 200, Height: 20})
+	m := next.(Model)
+	if !strings.Contains(plain(m.View()), "Enter to send SIGTERM") {
+		t.Errorf("view does not name the signal:\n%s", plain(m.View()))
 	}
 }
 
@@ -178,30 +185,196 @@ func TestViewScrollsToKeepTheCursorVisible(t *testing.T) {
 	}
 	m := sized(New(items(lines...), "", "SIGKILL", noReload))
 	for range 40 {
-		m, _ = press(m, key(tea.KeyDown))
+		m, _ = press(m, key(tea.KeyUp))
 	}
-	view := m.View()
+	view := plain(m.View())
 	if !strings.Contains(view, lines[40]) {
 		t.Errorf("cursor row %q not in view:\n%s", lines[40], view)
 	}
-	if n := strings.Count(view, "\n") + 1; n > 20 {
-		t.Errorf("view has %d lines, want at most the window height 20", n)
+	if n := strings.Count(view, "\n") + 1; n != 20 {
+		t.Errorf("view has %d lines, want the window height 20", n)
 	}
 }
 
-func TestMovingUpInsideTheWindowDoesNotScroll(t *testing.T) {
+func TestMovingBackInsideTheWindowDoesNotScroll(t *testing.T) {
 	var lines []string
 	for i := range 50 {
 		lines = append(lines, "proc line "+string(rune('A'+i%26))+string(rune('a'+i/26)))
 	}
 	m := sized(New(items(lines...), "", "SIGKILL", noReload))
 	for range 40 {
-		m, _ = press(m, key(tea.KeyDown))
+		m, _ = press(m, key(tea.KeyUp))
 	}
-	firstRow := func(m Model) string { return strings.Split(m.View(), "\n")[2] }
+	// Rows grow upward from the header, so the window's topmost row is the
+	// first non-blank line.
+	firstRow := func(m Model) string {
+		for _, l := range strings.Split(plain(m.View()), "\n") {
+			if strings.TrimSpace(l) != "" {
+				return l
+			}
+		}
+		return ""
+	}
 	before := firstRow(m)
-	m, _ = press(m, key(tea.KeyUp))
+	m, _ = press(m, key(tea.KeyDown))
 	if after := firstRow(m); after != before {
-		t.Errorf("first row changed from %q to %q after moving up inside the window", before, after)
+		t.Errorf("first row changed from %q to %q after moving back inside the window", before, after)
+	}
+}
+
+func viewLines(m Model) []string {
+	return strings.Split(plain(m.View()), "\n")
+}
+
+func TestLayoutMatchesFzf(t *testing.T) {
+	m := sized(New(items("101 node a", "202 python b"), "py", "SIGKILL", noReload))
+	lines := viewLines(m)
+	n := len(lines)
+	// The trailing space is the reverse-video caret.
+	if strings.TrimRight(lines[n-1], " ") != "> py" {
+		t.Errorf("prompt line = %q, want \"> py\" at the bottom", lines[n-1])
+	}
+	if !strings.HasPrefix(lines[n-2], "  1/2 (0) ─") {
+		t.Errorf("info line = %q, want \"  1/2 (0) ─...\"", lines[n-2])
+	}
+	if !strings.HasPrefix(lines[n-3], "  kil: type to filter") {
+		t.Errorf("header line = %q, want the key help", lines[n-3])
+	}
+	if !strings.HasPrefix(lines[n-4], "▌ 202 python b") {
+		t.Errorf("first row = %q, want the best match just above the header", lines[n-4])
+	}
+}
+
+func TestSelectedRowShowsMarker(t *testing.T) {
+	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", noReload))
+	m, _ = press(m, key(tea.KeyTab))
+	view := plain(m.View())
+	if !strings.Contains(view, "▌┃101 node a") {
+		t.Errorf("selected row has no ┃ marker:\n%s", view)
+	}
+	if !strings.Contains(view, "(1)") {
+		t.Errorf("info line does not count the selection:\n%s", view)
+	}
+}
+
+func TestLongLineShiftsToShowTheMatch(t *testing.T) {
+	long := "101 java " + strings.Repeat("x", 100) + " needle"
+	m := sized(New(items(long), "'needle", "SIGKILL", noReload))
+	view := plain(m.View())
+	if !strings.Contains(view, "··") || !strings.Contains(view, "needle") {
+		t.Errorf("long line does not show the match with an ellipsis:\n%s", view)
+	}
+	for _, l := range strings.Split(view, "\n") {
+		if w := ansi.StringWidth(l); w > 80 {
+			t.Errorf("line is %d columns wide, want at most 80: %q", w, l)
+		}
+	}
+}
+
+func TestLongLineWithoutMatchIsCutWithEllipsis(t *testing.T) {
+	long := "101 java " + strings.Repeat("x", 100)
+	m := sized(New(items(long), "", "SIGKILL", noReload))
+	view := plain(m.View())
+	if !strings.Contains(view, "xx··") {
+		t.Errorf("long line is not cut with a trailing ellipsis:\n%s", view)
+	}
+}
+
+func TestColumnsAndMatchesAreColored(t *testing.T) {
+	line := "  101     1 alice    sleep           sleep 60"
+	other := "  202     1 bob      sleep           sleep 99"
+	m := sized(New(items(line, other), "'60", "SIGKILL", noReload))
+	m, _ = press(m, key(tea.KeyCtrlU)) // empty query: both rows, cursor on the first
+	m, _ = press(m, typed("'99"))
+	view := m.View()
+	for name, want := range map[string]string{
+		"PID":           fg(colorPID) + "202",
+		"PPID":          fg(colorPPID) + "1",
+		"USER":          fg(colorUser) + "bob",
+		"cursor match":  fg(colorMatchFocused) + "9",
+		"cursor row bg": bg(colorCursorBg),
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("%s is not colored (want %q in the view):\n%q", name, want, view)
+		}
+	}
+
+	m, _ = press(m, key(tea.KeyCtrlU))
+	view = m.View()
+	if !strings.Contains(view, fg(colorPID)+"101") {
+		t.Errorf("PID of a non-cursor row is not colored:\n%q", view)
+	}
+}
+
+func TestMatchOnNonCursorRowIsColored(t *testing.T) {
+	m := sized(New(items("  101 1 alice sleep zzz", "  202 1 bob sleep zzz"), "zzz", "SIGKILL", noReload))
+	view := m.View()
+	if !strings.Contains(view, fg(colorMatch)+"z") {
+		t.Errorf("match on the non-cursor row is not colored:\n%q", view)
+	}
+}
+
+// fzf draws ·, ▌, ─, and │ one column wide even in East Asian locales, where
+// they are ambiguous-width, and so must kil, or rows are cut short.
+func TestWidthsIgnoreEastAsianLocale(t *testing.T) {
+	t.Setenv("LANG", "ja_JP.UTF-8")
+	t.Setenv("LC_ALL", "ja_JP.UTF-8")
+	t.Setenv("RUNEWIDTH_EASTASIAN", "1")
+	long := "101 java " + strings.Repeat("x", 200)
+	m := sized(New(items(long), "", "SIGKILL", noReload))
+	lines := viewLines(m)
+	n := len(lines)
+	// Each check counts runes, which is the column count when every
+	// character is one column wide.
+	if got := len([]rune(lines[n-4])); got != 79 {
+		t.Errorf("row is %d columns, want 79 (as fzf: the last column is left for the scrollbar):\n%q", got, lines[n-4])
+	}
+	if got := len([]rune(lines[n-2])); got != 79 {
+		t.Errorf("info line is %d columns, want 79:\n%q", got, lines[n-2])
+	}
+	if got := len([]rune(lines[n-3])); got != 79 {
+		t.Errorf("header line is %d columns, want 79:\n%q", got, lines[n-3])
+	}
+}
+
+// As in fzf's default layout, the best match is at the bottom: Up moves to
+// the next match, and Tab toggles and then moves down, toward the best.
+func TestKeysMoveAsInFzfDefaultLayout(t *testing.T) {
+	m := sized(New(items("101 node a", "202 python b", "303 ruby c"), "", "SIGKILL", noReload))
+	m, _ = press(m, key(tea.KeyUp), key(tea.KeyUp)) // ruby
+	m, _ = press(m, key(tea.KeyTab))                // select ruby, move down to python
+	m, _ = press(m, key(tea.KeyShiftTab))           // select python, move up
+	m, _ = press(m, key(tea.KeyEnter))
+	if got := targetTexts(m); !slices.Equal(got, []string{"202 python b", "303 ruby c"}) {
+		t.Errorf("Targets() = %v, want python and ruby", got)
+	}
+}
+
+func TestTabMovesDownTowardTheBestMatch(t *testing.T) {
+	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", noReload))
+	m, _ = press(m, key(tea.KeyUp), key(tea.KeyTab), key(tea.KeyTab), key(tea.KeyEnter))
+	if got := targetTexts(m); !slices.Equal(got, []string{"101 node a", "202 python b"}) {
+		t.Errorf("Targets() = %v, want both rows", got)
+	}
+}
+
+// As fzf with its default --hscroll-off=10, a shifted line keeps 10 columns
+// after the last match visible.
+func TestShiftedLineKeepsTenColumnsAfterTheMatch(t *testing.T) {
+	long := "101 " + strings.Repeat("x", 100) + "needle" + "abcdefghijklmnopqrstuvwxyz"
+	m := sized(New(items(long), "'needle", "SIGKILL", noReload))
+	view := plain(m.View())
+	if !strings.Contains(view, "needleabcdefghij··") {
+		t.Errorf("shifted line does not keep 10 columns after the match:\n%s", view)
+	}
+}
+
+// When little follows the match, fzf shows the line up to its end.
+func TestShiftedLineShowsAShortTail(t *testing.T) {
+	long := "101 " + strings.Repeat("x", 100) + "needle tail"
+	m := sized(New(items(long), "'needle", "SIGKILL", noReload))
+	view := plain(m.View())
+	if !strings.Contains(view, "needle tail") || strings.Contains(view, "tail··") {
+		t.Errorf("shifted line does not end with the short tail:\n%s", view)
 	}
 }

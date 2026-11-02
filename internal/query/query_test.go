@@ -1,6 +1,9 @@
 package query
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestMatch(t *testing.T) {
 	tests := []struct {
@@ -67,5 +70,47 @@ func TestEmpty(t *testing.T) {
 	}
 	if Parse("x").Empty() {
 		t.Error("query with a term is Empty")
+	}
+}
+
+// As in fzf, an OR group scores with its first matching term, not its best.
+func TestORGroupScoresWithFirstMatchingTerm(t *testing.T) {
+	first, ok := Parse("'od").Match("node xx")
+	if !ok {
+		t.Fatal("'od did not match")
+	}
+	got, ok := Parse("'od | ^node").Match("node xx")
+	if !ok || got != first {
+		t.Errorf("score of \"'od | ^node\" = %d, %v; want the score of 'od, %d", got, ok, first)
+	}
+}
+
+// fzf normalizes accented letters by default, so "cafe" finds "café".
+func TestAccentsAreNormalized(t *testing.T) {
+	if _, ok := Parse("cafe").Match("café"); !ok {
+		t.Error("\"cafe\" did not match \"café\"")
+	}
+}
+
+func TestPositions(t *testing.T) {
+	tests := []struct {
+		query string
+		text  string
+		want  []int
+	}{
+		{"", "node", nil},
+		{"nd", "node", []int{0, 2}},
+		{"'od", "node", []int{1, 2}},
+		{"^no", "node", []int{0, 1}},
+		{"de$", "node", []int{2, 3}},
+		{"!zz", "node", nil},
+		{"zz | od", "node", []int{1, 2}},
+		{"no de", "node", []int{0, 1, 2, 3}},
+	}
+	for _, tt := range tests {
+		got := Parse(tt.query).Positions(tt.text)
+		if !slices.Equal(got, tt.want) {
+			t.Errorf("Parse(%q).Positions(%q) = %v, want %v", tt.query, tt.text, got, tt.want)
+		}
 	}
 }

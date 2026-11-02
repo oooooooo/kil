@@ -25,8 +25,10 @@ func TestParse(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Process{
-		{PID: 1, PPID: 0, Line: "1 0 root init /sbin/init"},
-		{PID: 202, PPID: 1, Line: "202 1 alice tmux: server tmux new -s work"},
+		{PID: 1, PPID: 0, Line: "1 0 root init /sbin/init",
+			Raw: "    1     0 root     init            /sbin/init"},
+		{PID: 202, PPID: 1, Line: "202 1 alice tmux: server tmux new -s work",
+			Raw: "  202     1 alice    tmux: server    tmux new -s work"},
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("Parse() = %+v, want %+v", got, want)

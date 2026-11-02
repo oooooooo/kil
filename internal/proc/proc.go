@@ -21,6 +21,9 @@ type Process struct {
 	// Line is the ps line with runs of whitespace collapsed, so that lines
 	// from different ps invocations compare equal despite column padding.
 	Line string
+	// Raw is the ps line as printed, with its column padding, for display
+	// and matching, as fzf would see it.
+	Raw string
 }
 
 // Parse parses ps output produced with psColumns.
@@ -44,7 +47,12 @@ func Parse(out string) ([]Process, error) {
 		if err != nil || ppid < 0 {
 			return nil, fmt.Errorf("unexpected PPID in ps line: %q", raw)
 		}
-		procs = append(procs, Process{PID: pid, PPID: ppid, Line: strings.Join(fields, " ")})
+		procs = append(procs, Process{
+			PID:  pid,
+			PPID: ppid,
+			Line: strings.Join(fields, " "),
+			Raw:  strings.TrimRight(raw, "\n"),
+		})
 	}
 	return procs, nil
 }

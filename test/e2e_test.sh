@@ -62,13 +62,14 @@ start_kil() {
   rm -f "$OUT"
   tmux new-session -d -s "$SESSION" -x 200 -y 40 \
     "KIL_SIGNAL=0 '$KIL' >'$OUT' 2>&1; echo 'kil finished' >>'$OUT'"
-  wait_until shows "(0 selected)"
+  wait_until shows "/[0-9]* (0) "
 }
 
 type_query() {
   tmux send-keys -t "$SESSION" C-u
   tmux send-keys -t "$SESSION" -l "'$1"
-  wait_until shows "^> '$1\$"
+  # The prompt may end with the caret, drawn as a space.
+  wait_until shows "^> '$1 *\$"
   wait_until shows "$1 600"
 }
 
@@ -92,11 +93,11 @@ test_hidden_selection_stays_on_screen() {
   start_kil
   type_query "$ID-alpha"
   tmux send-keys -t "$SESSION" Tab
-  wait_until shows "(1 selected)"
+  wait_until shows "/[0-9]* (1) "
   type_query "$ID-beta"
 
   local errors=()
-  shows "● .*$ID-alpha 600" || errors+=("selected alpha is not on screen after the query changed")
+  shows "┃.*$ID-alpha 600" || errors+=("selected alpha is not on screen after the query changed")
   finish
   signalled "$ID-alpha" || errors+=("selected alpha was not signalled")
   ! signalled "$ID-beta" || errors+=("unselected beta was signalled")
@@ -108,11 +109,12 @@ test_selecting_across_queries() {
   start_kil
   type_query "$ID-alpha"
   tmux send-keys -t "$SESSION" Tab
-  wait_until shows "(1 selected)"
+  wait_until shows "/[0-9]* (1) "
   type_query "$ID-beta"
-  # The cursor starts on the pinned alpha row; move to beta and select it.
-  tmux send-keys -t "$SESSION" Down Tab
-  wait_until shows "(2 selected)"
+  # The cursor starts on the pinned alpha row at the bottom; beta is above
+  # it, as in fzf's default layout.
+  tmux send-keys -t "$SESSION" Up Tab
+  wait_until shows "/[0-9]* (2) "
 
   local errors=()
   finish

@@ -8,9 +8,10 @@ Instead of the usual `ps | grep <name>` followed by `kill -9 <pid>`, just run:
 kil <query>
 ```
 
-The process list is filtered in real time as you type. Press **Enter** and the
-selected processes are killed. Selected processes stay on screen even when the
-query no longer matches them, so `kil` never kills a process you cannot see.
+The process list is filtered in real time as you type, looking and matching
+like [fzf](https://github.com/junegunn/fzf). Press **Enter** and the selected
+processes are killed. Selected processes stay on screen even when the query no
+longer matches them, so `kil` never kills a process you cannot see.
 
 ## Installation
 
@@ -30,7 +31,7 @@ kil -- -zsh    # use -- when the query starts with "-"
 kil --help     # show usage
 ```
 
-The query uses [fzf](https://github.com/junegunn/fzf)'s search syntax: terms
+The query uses fzf's search syntax: terms
 separated by spaces must all match, and `node | python` matches either.
 `'exact`, `^prefix`, `suffix$`, and `!exclude` work as in fzf.
 
@@ -38,8 +39,8 @@ separated by spaces must all match, and `node | python` matches either.
 | --- | --- |
 | type | Filter the process list in real time |
 | `Ctrl-U` | Clear the query |
-| `Up` / `Down` | Move the cursor (also `Ctrl-P` / `Ctrl-N`) |
-| `Tab` | Select or deselect the process under the cursor. Selected processes are pinned to the top of the list, so you can select under one query, change the query, and select more |
+| `Up` / `Down` | Move the cursor (also `Ctrl-P` / `Ctrl-N`). As in fzf, the best match is at the bottom |
+| `Tab` / `Shift-Tab` | Select or deselect the process under the cursor and move down / up. Selected processes are pinned next to the prompt, so you can select under one query, change the query, and select more |
 | `Ctrl-A` | Select every process currently shown |
 | `Ctrl-R` | Refresh the process list, keeping your query and selections |
 | `Enter` | Kill the selected processes, or the one under the cursor if none are selected |

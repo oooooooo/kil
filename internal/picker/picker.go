@@ -9,6 +9,8 @@ package picker
 
 import (
 	"slices"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/oooooooo/kil/internal/query"
 )
@@ -69,27 +71,28 @@ func (p *Picker) SetQuery(s string) {
 	p.cursor = 0
 }
 
-// Up moves the cursor one row up.
-func (p *Picker) Up() {
+// Prev moves the cursor to the previous row.
+func (p *Picker) Prev() {
 	p.cursor = max(p.cursor-1, 0)
 }
 
-// Down moves the cursor one row down.
-func (p *Picker) Down() {
+// Next moves the cursor to the next row.
+func (p *Picker) Next() {
 	p.cursor = min(p.cursor+1, max(len(p.rows)-1, 0))
 }
 
-// Toggle flips the selection of the focused row and moves the cursor on to
-// the row that followed it, which may have moved because the toggled row
-// joined or left the pinned rows.
-func (p *Picker) Toggle() {
+// Toggle flips the selection of the focused row and then moves the cursor
+// step rows from it, to the row that was there before the toggle. That row
+// may have moved, because the toggled row joined or left the pinned rows.
+// If there is no such row, the cursor stays on the toggled row.
+func (p *Picker) Toggle(step int) {
 	if len(p.rows) == 0 {
 		return
 	}
 	toggled := p.rows[p.cursor].Item.ID
 	next := toggled
-	if p.cursor+1 < len(p.rows) {
-		next = p.rows[p.cursor+1].Item.ID
+	if i := p.cursor + step; i >= 0 && i < len(p.rows) {
+		next = p.rows[i].Item.ID
 	}
 	if p.selected[toggled] {
 		delete(p.selected, toggled)
@@ -183,11 +186,22 @@ func (p *Picker) refresh() {
 			matches = append(matches, match{it, score})
 		}
 	}
-	if !p.query.Empty() {
-		slices.SortStableFunc(matches, func(a, b match) int { return b.score - a.score })
+	if p.query.Sortable() {
+		// fzf's default --tiebreak=length,index: among equal scores, the
+		// shorter line first, then the earlier one (the sort is stable).
+		slices.SortStableFunc(matches, func(a, b match) int {
+			if a.score != b.score {
+				return b.score - a.score
+			}
+			return trimmedLen(a.item.Text) - trimmedLen(b.item.Text)
+		})
 	}
 	p.rows = pinned
 	for _, m := range matches {
 		p.rows = append(p.rows, Row{Item: m.item})
 	}
+}
+
+func trimmedLen(s string) int {
+	return utf8.RuneCountInString(strings.TrimSpace(s))
 }

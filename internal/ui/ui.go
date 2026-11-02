@@ -2,13 +2,10 @@
 package ui
 
 import (
-	"fmt"
-	"strings"
-
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/mattn/go-runewidth"
 
 	"github.com/oooooooo/kil/internal/picker"
+	"github.com/oooooooo/kil/internal/query"
 )
 
 // An Outcome is how the picker ended.
@@ -31,6 +28,7 @@ const (
 type Model struct {
 	picker    *picker.Picker
 	query     []rune
+	parsed    query.Query
 	label     string
 	total     int
 	reload    func() ([]picker.Item, error)
@@ -48,14 +46,15 @@ type reloadMsg struct {
 	err   error
 }
 
-// New returns a picker over items, filtered by query. label names the
+// New returns a picker over items, filtered by initial. label names the
 // signal Enter sends, and reload lists the processes again for Ctrl-R.
-func New(items []picker.Item, query, label string, reload func() ([]picker.Item, error)) Model {
+func New(items []picker.Item, initial, label string, reload func() ([]picker.Item, error)) Model {
 	p := picker.New(items)
-	p.SetQuery(query)
+	p.SetQuery(initial)
 	return Model{
 		picker: p,
-		query:  []rune(query),
+		query:  []rune(initial),
+		parsed: query.Parse(initial),
 		label:  label,
 		total:  len(items),
 		reload: reload,
@@ -123,12 +122,16 @@ func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.outcome = NothingSelected
 		}
 		return m, tea.Quit
+	// The list grows upward from the prompt, as in fzf's default layout, so
+	// moving up on screen goes to the next row and down to the previous.
 	case tea.KeyUp, tea.KeyCtrlP, tea.KeyCtrlK:
-		m.picker.Up()
+		m.picker.Next()
 	case tea.KeyDown, tea.KeyCtrlN, tea.KeyCtrlJ:
-		m.picker.Down()
+		m.picker.Prev()
 	case tea.KeyTab:
-		m.picker.Toggle()
+		m.picker.Toggle(-1) // fzf's toggle+down
+	case tea.KeyShiftTab:
+		m.picker.Toggle(1) // fzf's toggle+up
 	case tea.KeyCtrlA:
 		m.picker.SelectAllShown()
 	case tea.KeyCtrlR:
@@ -158,82 +161,6 @@ func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) setQuery(q []rune) {
 	m.query = append([]rune(nil), q...)
 	m.picker.SetQuery(string(m.query))
+	m.parsed = query.Parse(string(m.query))
 	m.offset = 0
-}
-
-// View implements tea.Model.
-func (m Model) View() string {
-	rows := m.picker.Rows()
-	lines := []string{
-		"> " + string(m.query),
-		fmt.Sprintf("  %d/%d (%d selected)  Enter: send %s  Tab: select  Ctrl-A: select all shown  Ctrl-R: refresh  Esc: abort",
-			len(rows)-m.pinnedCount(), m.total, m.picker.SelectedCount(), m.label),
-	}
-	body, cursorLine := m.layout()
-	offset := scrolled(m.offset, cursorLine, m.bodyHeight())
-	end := min(offset+m.bodyHeight(), len(body))
-	lines = append(lines, body[offset:end]...)
-
-	for i, l := range lines {
-		lines[i] = runewidth.Truncate(l, m.width, "")
-	}
-	return strings.Join(lines, "\n")
-}
-
-// headerLines is the number of lines above the rows: the query and the
-// status line.
-const headerLines = 2
-
-func (m Model) bodyHeight() int {
-	return max(m.height-headerLines, 1)
-}
-
-func (m Model) pinnedCount() int {
-	n := 0
-	for _, r := range m.picker.Rows() {
-		if r.Pinned {
-			n++
-		}
-	}
-	return n
-}
-
-// layout renders the rows with a separator between the pinned selections
-// and the matches, so it also returns the cursor's line index, which can
-// differ from its row index.
-func (m Model) layout() ([]string, int) {
-	pinned := m.pinnedCount()
-	var body []string
-	cursorLine := 0
-	for i, r := range m.picker.Rows() {
-		if i == pinned && pinned > 0 {
-			body = append(body, "  "+strings.Repeat("─", 20))
-		}
-		if i == m.picker.Cursor() {
-			cursorLine = len(body)
-		}
-		body = append(body, rowLine(r, i == m.picker.Cursor()))
-	}
-	return body, cursorLine
-}
-
-// scrolled returns the first line to show so that the cursor line is within
-// a window of the given height, moving the window as little as possible.
-func scrolled(offset, cursorLine, height int) int {
-	offset = min(offset, cursorLine)
-	if cursorLine >= offset+height {
-		offset = cursorLine - height + 1
-	}
-	return offset
-}
-
-func rowLine(r picker.Row, focused bool) string {
-	cursor, mark := " ", " "
-	if focused {
-		cursor = ">"
-	}
-	if r.Selected {
-		mark = "●"
-	}
-	return cursor + mark + " " + r.Item.Text
 }

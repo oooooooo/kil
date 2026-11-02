@@ -5,6 +5,7 @@
 package query
 
 import (
+	"slices"
 	"strings"
 	"sync"
 	"unicode"
@@ -94,7 +95,7 @@ func parseTerm(token string, caseSensitive bool) (term, bool) {
 	if !caseSensitive {
 		token = strings.Map(unicode.ToLower, token)
 	}
-	t.text = []rune(token)
+	t.text = algo.NormalizeRunes([]rune(token))
 	return t, true
 }
 
@@ -103,28 +104,75 @@ func (q Query) Empty() bool {
 	return len(q.groups) == 0
 }
 
+// Sortable reports whether matches should be ranked by score. As in fzf, a
+// query with only negated terms gives every line the same score, so its
+// matches keep their input order.
+func (q Query) Sortable() bool {
+	for _, group := range q.groups {
+		for _, t := range group {
+			if !t.negated {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Match reports whether text satisfies q and, if so, a score that is higher
 // for tighter matches.
 func (q Query) Match(text string) (int, bool) {
-	chars := util.ToChars([]byte(text))
-	total := 0
-	for _, group := range q.groups {
-		best, matched := 0, false
-		for _, t := range group {
-			score, ok := q.matchTerm(t, &chars)
-			if ok && (!matched || score > best) {
-				best, matched = score, true
-			}
-		}
-		if !matched {
-			return 0, false
-		}
-		total += best
-	}
-	return total, true
+	score, _, ok := q.match(text, false)
+	return score, ok
 }
 
-func (q Query) matchTerm(t term, chars *util.Chars) (int, bool) {
+// Positions returns the rune indexes in text that q matched, for
+// highlighting, in ascending order. It returns nil if text does not match.
+func (q Query) Positions(text string) []int {
+	_, pos, ok := q.match(text, true)
+	if !ok || len(pos) == 0 {
+		return nil
+	}
+	slices.Sort(pos)
+	return slices.Compact(pos)
+}
+
+func (q Query) match(text string, withPos bool) (int, []int, bool) {
+	chars := util.ToChars([]byte(text))
+	total := 0
+	var positions []int
+	for _, group := range q.groups {
+		score, pos, ok := q.matchGroup(group, &chars, withPos)
+		if !ok {
+			return 0, nil, false
+		}
+		total += score
+		positions = append(positions, pos...)
+	}
+	return total, positions, true
+}
+
+// matchGroup follows fzf's extendedMatch: the first matching term decides
+// the score, and a negated term that holds matches with score 0 but lets a
+// later term still supply a score.
+func (q Query) matchGroup(group []term, chars *util.Chars, withPos bool) (int, []int, bool) {
+	matched := false
+	for _, t := range group {
+		res, pos := q.matchTerm(t, chars, withPos)
+		found := res.Start >= 0
+		if t.negated {
+			if !found {
+				matched = true
+			}
+			continue
+		}
+		if found {
+			return res.Score, pos, true
+		}
+	}
+	return 0, nil, matched
+}
+
+func (q Query) matchTerm(t term, chars *util.Chars, withPos bool) (algo.Result, []int) {
 	var fn algo.Algo
 	switch t.kind {
 	case exact:
@@ -138,10 +186,19 @@ func (q Query) matchTerm(t term, chars *util.Chars) (int, bool) {
 	default:
 		fn = algo.FuzzyMatchV2
 	}
-	res, _ := fn(q.caseSensitive, false, true, chars, t.text, false, nil)
-	found := res.Start >= 0
-	if t.negated {
-		return 0, !found
+	// normalize is on as in fzf's default, which folds accented letters.
+	res, pos := fn(q.caseSensitive, true, true, chars, t.text, withPos, nil)
+	if !withPos || res.Start < 0 || t.negated {
+		return res, nil
 	}
-	return res.Score, found
+	if pos != nil {
+		return res, *pos
+	}
+	// Only the fuzzy algorithm reports positions; the others match one
+	// contiguous range, as fzf highlights them.
+	var out []int
+	for i := res.Start; i < res.End; i++ {
+		out = append(out, i)
+	}
+	return res, out
 }

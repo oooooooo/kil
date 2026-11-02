@@ -21,7 +21,13 @@ Using fzf is fine, and so is writing it from scratch in Go.
   `Enter`, not with `Enter` alone. `Enter` only signals the selected lines, or
   the cursor line when nothing is selected, so that pressing `Enter` mid-filter
   cannot kill a large, unintended set of processes.
-- Changing the query clears every selection. fzf otherwise keeps selections that
-  the new query hides and prints them on `Enter`, so processes that are no
-  longer on screen would be killed. This gives up selecting across several
-  queries in one session.
+- Selected processes are pinned to the top of the list and stay on screen when
+  the query no longer matches them. fzf keeps such selections hidden and still
+  prints them on `Enter`, so the fzf-based version cleared every selection on a
+  query change instead, which made selecting across several queries
+  impossible. Pinning keeps both: every process `Enter` signals is on screen,
+  and selections survive query changes. This is why kil is written in Go
+  rather than wrapping fzf.
+- Matching uses fzf's own algorithm (`github.com/junegunn/fzf/src/algo`), so
+  queries behave as in fzf. That package is not a stable API, so the fzf
+  version is pinned in `go.mod`.

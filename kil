@@ -157,6 +157,10 @@ if echo x | run_fzf --id-nth=.. --filter=x >/dev/null 2>&1; then
   TRACK_OPTS=(--track --id-nth=..)
 fi
 
+# fzf keeps selections that the current query hides and prints them on Enter,
+# so a process selected earlier would be signalled without being on screen.
+# Clearing the selection on every query change keeps Enter limited to what is
+# shown. Ctrl-R does not change the query, so it keeps selections.
 # fzf's status is taken from PIPESTATUS: under pipefail, the producer can die
 # of SIGPIPE when fzf exits first, which would otherwise mask fzf's status.
 status=0
@@ -167,6 +171,7 @@ selected=$(
     ${TRACK_OPTS[@]+"${TRACK_OPTS[@]}"} \
     --header "kil: type to filter, Tab to select, Ctrl-A to select all shown, Ctrl-R to refresh, Enter to send ${SIGNAL_LABEL} to selected/current line (Ctrl-C to abort)" \
     --bind "ctrl-a:select-all" \
+    --bind "change:clear-selection" \
     --bind "ctrl-r:$RELOAD_ACTION:$LIST_CMD"
   exit "${PIPESTATUS[1]}"
 ) || status=$?

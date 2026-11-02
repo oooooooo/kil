@@ -17,8 +17,9 @@ Using fzf is fine, and so is writing it from scratch in Go.
 
 ## Decisions
 
-- Killing everything shown is done with `Alt-A` (select all shown) followed by
-  `Enter`, not with `Enter` alone. `Enter` only signals the selected lines, or
+- Killing everything shown is done with `Alt-A` (select all shown; pressed
+  again when all are selected, it deselects them) followed by `Enter`, not
+  with `Enter` alone. `Enter` only signals the selected lines, or
   the cursor line when nothing is selected, so that pressing `Enter` mid-filter
   cannot kill a large, unintended set of processes.
 - Selected processes are pinned to the top of the list and stay on screen when
@@ -37,5 +38,7 @@ Using fzf is fine, and so is writing it from scratch in Go.
   rather than fzf's `Ctrl-K`.
 - Matching is fuzzy by default, as in fzf. Exact matching, as fzf `--exact`,
   is available with `-e`, `KIL_EXACT=1`, or `Ctrl-X`, because fuzzy matches on
-  long command lines (e.g. `ruby` matching `resolve /usr/lib/systemd`) bury
+  long command lines (e.g. `node` matching `polkitd --no-debug`) bury
   the processes the user means.
+- Pinned selections are ordered by when they were selected, so `Alt-A`, which
+  selects in the order shown, does not reorder the list.

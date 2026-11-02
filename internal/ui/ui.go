@@ -114,7 +114,7 @@ func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if k.Alt && k.Type == tea.KeyRunes && len(k.Runes) == 1 {
 		switch k.Runes[0] {
 		case 'a':
-			m.picker.SelectAllShown()
+			m.picker.ToggleAllShown()
 		case 'b':
 			m.input.wordLeft()
 		case 'f':

@@ -144,10 +144,10 @@ func TestToggleAtTheEdgeStaysOnTheToggledRow(t *testing.T) {
 	}
 }
 
-func TestSelectAllShownSelectsOnlyMatches(t *testing.T) {
+func TestToggleAllShownSelectsOnlyMatches(t *testing.T) {
 	p := New(items("101 node a", "202 python b", "203 python c"))
 	p.SetQuery("python")
-	p.SelectAllShown()
+	p.ToggleAllShown()
 	got := targetTexts(p)
 	want := []string{"202 python b", "203 python c"}
 	if !slices.Equal(got, want) {
@@ -218,7 +218,7 @@ func TestTargetsAreAlwaysShownRows(t *testing.T) {
 			case 3:
 				p.Next()
 			case 4:
-				p.SelectAllShown()
+				p.ToggleAllShown()
 			case 5:
 				subset := slices.Clone(lines)
 				rng.Shuffle(len(subset), func(i, j int) { subset[i], subset[j] = subset[j], subset[i] })
@@ -280,5 +280,53 @@ func TestExactModeMatchesSubstringsOnly(t *testing.T) {
 	p.SetExact(false)
 	if got := texts(p.Rows()); len(got) != 2 {
 		t.Errorf("Rows() after SetExact(false) = %v, want both lines again", got)
+	}
+}
+
+func TestPinnedRowsKeepTheOrderTheyWereSelectedIn(t *testing.T) {
+	p := New(items("101 node a", "202 python b", "303 ruby c"))
+	p.Next()
+	p.Next()
+	p.Toggle(0) // ruby first
+	p.SetQuery("")
+	p.Next() // node is the first unpinned row now
+	p.Toggle(0)
+	got := targetTexts(p)
+	want := []string{"303 ruby c", "101 node a"}
+	if !slices.Equal(got, want) {
+		t.Errorf("Targets() = %v, want selection order %v", got, want)
+	}
+}
+
+func TestToggleAllShownKeepsTheShownOrder(t *testing.T) {
+	// Equal-length lines rank by score, so "node" puts the tight match first.
+	p := New(items("101 n o d e", "202 node b"))
+	p.SetQuery("node")
+	before := texts(p.Rows())
+	p.ToggleAllShown()
+	if got := texts(p.Rows()); !slices.Equal(got, before) {
+		t.Errorf("Rows() after ToggleAllShown = %v, want the order unchanged %v", got, before)
+	}
+}
+
+func TestToggleAllShownDeselectsWhenEverythingShownIsSelected(t *testing.T) {
+	p := New(items("101 node a", "202 python b", "203 python c"))
+	p.SetQuery("python")
+	p.ToggleAllShown()
+	if p.SelectedCount() != 2 {
+		t.Fatalf("SelectedCount() = %d after the first toggle, want 2", p.SelectedCount())
+	}
+	p.ToggleAllShown()
+	if p.SelectedCount() != 0 {
+		t.Errorf("SelectedCount() = %d after the second toggle, want 0", p.SelectedCount())
+	}
+}
+
+func TestToggleAllShownSelectsTheRestWhenSomeAreSelected(t *testing.T) {
+	p := New(items("101 node a", "202 python b"))
+	p.Toggle(0)
+	p.ToggleAllShown()
+	if p.SelectedCount() != 2 {
+		t.Errorf("SelectedCount() = %d, want 2", p.SelectedCount())
 	}
 }

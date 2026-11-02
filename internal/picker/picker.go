@@ -34,18 +34,21 @@ type Row struct {
 
 // A Picker is the filter, selection, and cursor state of one kil session.
 type Picker struct {
-	items    []Item
-	text     string
-	exact    bool
-	query    query.Query
-	selected map[string]bool
+	items []Item
+	text  string
+	exact bool
+	query query.Query
+	// selected maps a selected item's ID to when it was selected, so that
+	// pinned rows keep the order in which they were selected.
+	selected map[string]int
+	selects  int
 	rows     []Row
 	cursor   int
 }
 
 // New returns a Picker showing items in the given order.
 func New(items []Item) *Picker {
-	p := &Picker{selected: map[string]bool{}}
+	p := &Picker{selected: map[string]int{}}
 	p.Reload(items)
 	return p
 }
@@ -122,21 +125,40 @@ func (p *Picker) Toggle(step int) {
 	if i := p.cursor + step; i >= 0 && i < len(p.rows) {
 		next = p.rows[i].Item.ID
 	}
-	if p.selected[toggled] {
+	if _, ok := p.selected[toggled]; ok {
 		delete(p.selected, toggled)
 	} else {
-		p.selected[toggled] = true
+		p.selectItem(toggled)
 	}
 	p.refresh()
 	p.focus(next)
 }
 
-// SelectAllShown selects every row currently shown.
-func (p *Picker) SelectAllShown() {
+// ToggleAllShown deselects every row shown if all of them are selected, and
+// otherwise selects the rest of them, in the order shown so that the rows
+// do not move.
+func (p *Picker) ToggleAllShown() {
+	allSelected := true
 	for _, r := range p.rows {
-		p.selected[r.Item.ID] = true
+		if !r.Selected {
+			allSelected = false
+			break
+		}
+	}
+	for _, r := range p.rows {
+		switch {
+		case allSelected:
+			delete(p.selected, r.Item.ID)
+		case !r.Selected:
+			p.selectItem(r.Item.ID)
+		}
 	}
 	p.refreshKeepingFocus()
+}
+
+func (p *Picker) selectItem(id string) {
+	p.selects++
+	p.selected[id] = p.selects
 }
 
 // ClearSelection deselects every item.
@@ -206,7 +228,7 @@ func (p *Picker) refresh() {
 	var pinned []Row
 	var matches []match
 	for _, it := range p.items {
-		if p.selected[it.ID] {
+		if _, ok := p.selected[it.ID]; ok {
 			pinned = append(pinned, Row{Item: it, Selected: true, Pinned: true})
 			continue
 		}
@@ -214,6 +236,9 @@ func (p *Picker) refresh() {
 			matches = append(matches, match{it, score})
 		}
 	}
+	slices.SortFunc(pinned, func(a, b Row) int {
+		return p.selected[a.Item.ID] - p.selected[b.Item.ID]
+	})
 	if p.query.Sortable() {
 		// fzf's default --tiebreak=length,index: among equal scores, the
 		// shorter line first, then the earlier one (the sort is stable).

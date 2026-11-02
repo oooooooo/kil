@@ -1,6 +1,6 @@
 # kil
 
-Interactively find and kill processes.
+An fzf-like process killer: find processes interactively and kill them.
 
 Instead of the usual `ps | grep <name>` followed by `kill -9 <pid>`, just run:
 
@@ -8,10 +8,11 @@ Instead of the usual `ps | grep <name>` followed by `kill -9 <pid>`, just run:
 kil <query>
 ```
 
-The process list is filtered in real time as you type, looking and matching
-like [fzf](https://github.com/junegunn/fzf). Press **Enter** and the selected
-processes are killed. Selected processes stay on screen even when the query no
-longer matches them, so `kil` never kills a process you cannot see.
+The process list is filtered in real time as you type. The screen, keys, and
+search syntax follow [fzf](https://github.com/junegunn/fzf). Press **Enter**
+and the selected processes are killed. Selected processes stay on screen even
+when the query no longer matches them, so `kil` never kills a process you
+cannot see.
 
 ## Installation
 
@@ -27,7 +28,7 @@ go install github.com/oooooooo/kil@latest
 kil            # browse all processes
 kil node       # start with "node" as the initial query
 kil node dev   # arguments are joined into one query: "node dev"
-kil -e ruby    # exact match: only lines that contain "ruby"
+kil -e node    # exact match: only lines that contain "node"
 kil -- -zsh    # use -- when the query starts with "-"
 kil --help     # show usage
 ```
@@ -38,15 +39,15 @@ The query uses fzf's search syntax. Terms separated by spaces must all match.
 
 | Query | Matches lines that |
 | --- | --- |
-| `ruby` | contain `r`, `u`, `b`, `y` in this order (fuzzy; also matches `resolve /usr/lib/systemd`) |
-| `'ruby` | contain `ruby` |
-| `'ruby'` | contain `ruby` as a whole word |
-| `.rb$` | end with `.rb` |
-| `^ruby` | start with `ruby` (rarely useful: lines start with the PID) |
-| `!ruby` | do not contain `ruby` |
-| `!'rby` | do not fuzzy-match `rby` |
-| `ruby \| node` | match `ruby` or `node` |
-| `ruby\ app` | contain `ruby app`, with the space (`\` escapes it) |
+| `node` | contain `n`, `o`, `d`, `e` in this order (fuzzy; also matches `polkitd --no-debug`) |
+| `'node` | contain `node` |
+| `'node'` | contain `node` as a whole word |
+| `.js$` | end with `.js` |
+| `^node` | start with `node` (rarely useful: lines start with the PID) |
+| `!node` | do not contain `node` |
+| `!'nde` | do not fuzzy-match `nde` |
+| `node \| python` | match `node` or `python` |
+| `npm\ run` | contain `npm run`, with the space (`\` escapes it) |
 
 A term with an uppercase letter is case sensitive; other terms are not.
 
@@ -61,7 +62,7 @@ instead. The info line shows `[exact]` in this mode.
 | type | Filter the process list in real time |
 | `Up` / `Down` | Move the cursor (also `Ctrl-P` / `Ctrl-N`). As in fzf, the best match is at the bottom |
 | `Tab` / `Shift-Tab` | Select or deselect the process under the cursor and move down / up. Selected processes are pinned next to the prompt, so you can select under one query, change the query, and select more |
-| `Alt-A` | Select every process currently shown |
+| `Alt-A` | Select every process currently shown, or deselect them all if they are all selected already |
 | `Ctrl-X` | Switch between fuzzy and exact matching |
 | `Ctrl-R` | Refresh the process list, keeping your query and selections |
 | `Enter` | Kill the selected processes, or the one under the cursor if none are selected |

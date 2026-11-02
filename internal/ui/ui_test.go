@@ -349,16 +349,17 @@ func TestKeysMoveAsInFzfDefaultLayout(t *testing.T) {
 	m, _ = press(m, key(tea.KeyTab))                // select ruby, move down to python
 	m, _ = press(m, key(tea.KeyShiftTab))           // select python, move up
 	m, _ = press(m, key(tea.KeyEnter))
-	if got := targetTexts(m); !slices.Equal(got, []string{"202 python b", "303 ruby c"}) {
-		t.Errorf("Targets() = %v, want python and ruby", got)
+	// Targets come in the order they were selected.
+	if got := targetTexts(m); !slices.Equal(got, []string{"303 ruby c", "202 python b"}) {
+		t.Errorf("Targets() = %v, want ruby, then python", got)
 	}
 }
 
 func TestTabMovesDownTowardTheBestMatch(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", noReload))
 	m, _ = press(m, key(tea.KeyUp), key(tea.KeyTab), key(tea.KeyTab), key(tea.KeyEnter))
-	if got := targetTexts(m); !slices.Equal(got, []string{"101 node a", "202 python b"}) {
-		t.Errorf("Targets() = %v, want both rows", got)
+	if got := targetTexts(m); !slices.Equal(got, []string{"202 python b", "101 node a"}) {
+		t.Errorf("Targets() = %v, want python, then node, as selected", got)
 	}
 }
 
@@ -471,5 +472,17 @@ func TestWithExactStartsInExactMode(t *testing.T) {
 	m := sized(New(items("101 ruby a", "202 resolve /usr/lib/systemd"), "ruby", "SIGKILL", noReload).WithExact(true))
 	if strings.Contains(plain(m.View()), "resolve") {
 		t.Errorf("WithExact(true) still matches fuzzily:\n%s", plain(m.View()))
+	}
+}
+
+func TestAltATogglesEveryShownRow(t *testing.T) {
+	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", noReload))
+	m, _ = press(m, alt('a'))
+	if !strings.Contains(plain(m.View()), "(2)") {
+		t.Fatalf("first Alt-A did not select both rows:\n%s", plain(m.View()))
+	}
+	m, _ = press(m, alt('a'))
+	if !strings.Contains(plain(m.View()), "(0)") {
+		t.Errorf("second Alt-A did not deselect both rows:\n%s", plain(m.View()))
 	}
 }

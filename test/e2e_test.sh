@@ -124,7 +124,28 @@ test_selecting_across_queries() {
   echo "ok: selections made under different queries are all signalled"
 }
 
+test_alt_a_selects_every_shown_row() {
+  start_kil
+  # Ctrl-A must move the caret to the start of the query rather than select:
+  # typing "'" there turns "ID-" into the exact term "'ID-".
+  tmux send-keys -t "$SESSION" -l "$ID-"
+  tmux send-keys -t "$SESSION" C-a
+  tmux send-keys -t "$SESSION" -l "'"
+  wait_until shows "^> '$ID- *\$"
+  wait_until shows "^  2/[0-9]* (0) "
+  tmux send-keys -t "$SESSION" M-a
+  wait_until shows "/[0-9]* (2) "
+
+  local errors=()
+  finish
+  signalled "$ID-alpha" || errors+=("alpha was not signalled")
+  signalled "$ID-beta" || errors+=("beta was not signalled")
+  check ${errors[@]+"${errors[@]}"}
+  echo "ok: Ctrl-A moves to the start of the query and Alt-A selects every shown row"
+}
+
 spawn "$ID-alpha"
 spawn "$ID-beta"
 test_hidden_selection_stays_on_screen
 test_selecting_across_queries
+test_alt_a_selects_every_shown_row

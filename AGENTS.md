@@ -17,7 +17,7 @@ Using fzf is fine, and so is writing it from scratch in Go.
 
 ## Decisions
 
-- Killing everything shown is done with `Ctrl-A` (select all shown) followed by
+- Killing everything shown is done with `Alt-A` (select all shown) followed by
   `Enter`, not with `Enter` alone. `Enter` only signals the selected lines, or
   the cursor line when nothing is selected, so that pressing `Enter` mid-filter
   cannot kill a large, unintended set of processes.
@@ -31,3 +31,11 @@ Using fzf is fine, and so is writing it from scratch in Go.
 - Matching uses fzf's own algorithm (`github.com/junegunn/fzf/src/algo`), so
   queries behave as in fzf. That package is not a stable API, so the fzf
   version is pinned in `go.mod`.
+- The query is edited with readline's keys, so `Ctrl-A` moves to the start of
+  the query and `Ctrl-K` deletes to its end, as in a shell. Select-all
+  therefore moved from `Ctrl-A` to `Alt-A`, and moving up is `Up` / `Ctrl-P`
+  rather than fzf's `Ctrl-K`.
+- Matching is fuzzy by default, as in fzf. Exact matching, as fzf `--exact`,
+  is available with `-e`, `KIL_EXACT=1`, or `Ctrl-X`, because fuzzy matches on
+  long command lines (e.g. `ruby` matching `resolve /usr/lib/systemd`) bury
+  the processes the user means.

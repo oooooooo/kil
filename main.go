@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -23,16 +24,19 @@ Filter processes interactively and send a signal to the selected ones.
 All arguments are joined with spaces into the initial query.
 
 Options:
+  -e, --exact  Match plain terms exactly, as fzf --exact ('term matches fuzzily)
   -h, --help   Show this help and exit
   --           Treat the remaining arguments as the query (e.g. kil -- -zsh)
 
 Environment:
   KIL_SIGNAL   Signal number or name to send (default: 9, i.e. SIGKILL)
+  KIL_EXACT    Set to 1 to start in exact mode, as with -e
 
 Exit status:
   0    every selected process was signalled
   1    nothing was selected, or some processes were skipped or failed
-  2    usage error, invalid KIL_SIGNAL, listing processes failed, or no terminal
+  2    usage error, invalid KIL_SIGNAL or KIL_EXACT, listing processes failed,
+       or no terminal
   130  aborted with Ctrl-C / Esc
 `
 
@@ -49,23 +53,41 @@ func main() {
 
 type options struct {
 	help  bool
+	exact bool
 	query string
 }
 
 func parseArgs(args []string) (options, error) {
+	var opts options
 	for i, a := range args {
 		switch {
 		case a == "-h" || a == "--help":
 			return options{help: true}, nil
+		case a == "-e" || a == "--exact":
+			opts.exact = true
 		case a == "--":
-			return options{query: strings.Join(args[i+1:], " ")}, nil
+			opts.query = strings.Join(args[i+1:], " ")
+			return opts, nil
 		case strings.HasPrefix(a, "-") && a != "-":
 			return options{}, fmt.Errorf("unknown option: %s (use 'kil -- %s' to search for it)", a, a)
 		default:
-			return options{query: strings.Join(args[i:], " ")}, nil
+			opts.query = strings.Join(args[i:], " ")
+			return opts, nil
 		}
 	}
-	return options{}, nil
+	return opts, nil
+}
+
+// exactFromEnv parses KIL_EXACT. An unset or empty value means fuzzy.
+func exactFromEnv(v string) (bool, error) {
+	if v == "" {
+		return false, nil
+	}
+	exact, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, fmt.Errorf("invalid KIL_EXACT: %q (use 1 or 0)", v)
+	}
+	return exact, nil
 }
 
 func run(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
@@ -77,6 +99,11 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if opts.help {
 		report(stdout, usage)
 		return exitOK
+	}
+	envExact, err := exactFromEnv(getenv("KIL_EXACT"))
+	if err != nil {
+		reportf(stderr, "kil: %v\n", err)
+		return exitError
 	}
 	sig, err := signal.Parse(getenv("KIL_SIGNAL"))
 	if err != nil {
@@ -101,7 +128,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return exitError
 	}
 
-	model, err := pick(ui.New(items, opts.query, signal.Label(sig), list))
+	model, err := pick(ui.New(items, opts.query, signal.Label(sig), list).WithExact(opts.exact || envExact))
 	if err != nil {
 		reportf(stderr, "kil: %v\n", err)
 		return exitError

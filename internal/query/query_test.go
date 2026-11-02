@@ -36,7 +36,17 @@ func TestMatch(t *testing.T) {
 		{"OR matches neither side", "python | ruby", "node server.js", false},
 		{"OR group is ANDed with other terms", "python | node srv", "node server.js", true},
 		{"OR group fails the AND", "python | node 'worker", "node server.js", false},
-		{"lone quote is a literal", "'", "it's", true},
+		{"lone quote is ignored", "'", "anything", true},
+		{"exact boundary matches a whole word", "'wild'", "a wild b", true},
+		{"exact boundary rejects part of a word", "'wild'", "wilder", false},
+		{"negated quote is fuzzy", "!'fr", "fire", false},
+		{"negated quote keeps non-matches", "!'fr", "ice", true},
+		{"case is decided per term", "Node srv", "Node SERVER", true},
+		{"uppercase term is still case sensitive", "Node srv", "node server", false},
+		{"escaped space is part of the term", `node\ ser`, "node server", true},
+		{"escaped space must match a space", `node\ ser`, "nodeXser", false},
+		{"lone dollar is a literal", "$", "a $ b", true},
+		{"leading bar is a term", "|", "a|b", true},
 		{"lone bang is ignored", "!", "anything", true},
 	}
 	for _, tt := range tests {
@@ -111,6 +121,26 @@ func TestPositions(t *testing.T) {
 		got := Parse(tt.query).Positions(tt.text)
 		if !slices.Equal(got, tt.want) {
 			t.Errorf("Parse(%q).Positions(%q) = %v, want %v", tt.query, tt.text, got, tt.want)
+		}
+	}
+}
+
+func TestExactMode(t *testing.T) {
+	tests := []struct {
+		query string
+		text  string
+		want  bool
+	}{
+		{"ruby", "ruby app.rb", true},
+		{"ruby", "resolve /usr/lib/systemd", false},
+		{"'rby", "ruby app.rb", true},   // ' flips to fuzzy, as fzf --exact
+		{"!'rby", "ruby app.rb", false}, // negated fuzzy
+		{"^rub", "ruby app.rb", true},
+	}
+	for _, tt := range tests {
+		_, got := ParseExact(tt.query).Match(tt.text)
+		if got != tt.want {
+			t.Errorf("ParseExact(%q).Match(%q) = %v, want %v", tt.query, tt.text, got, tt.want)
 		}
 	}
 }

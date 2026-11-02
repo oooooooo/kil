@@ -1,14 +1,15 @@
 // Package query matches process lines with fzf's extended search syntax:
 // space-separated terms are ANDed, "|" between terms ORs them, and a term
-// may be fuzzy (default), 'exact, ^prefix, suffix$, ^equal$, or !negated.
-// The matching itself is fzf's own algorithm, so results rank as in fzf.
+// may be fuzzy (default), 'exact, 'boundary', ^prefix, suffix$, ^equal$, or
+// !negated. Parsing is a port of fzf's parseTerms, and the matching itself
+// is fzf's own algorithm, so results rank as in fzf.
 package query
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
-	"unicode"
 
 	"github.com/junegunn/fzf/src/algo"
 	"github.com/junegunn/fzf/src/util"
@@ -19,84 +20,122 @@ type kind int
 const (
 	fuzzy kind = iota
 	exact
+	boundary
 	prefix
 	suffix
 	equal
 )
 
 type term struct {
-	kind    kind
-	negated bool
-	text    []rune
+	kind          kind
+	negated       bool
+	text          []rune
+	caseSensitive bool
+	normalize     bool
 }
 
 // A Query is a parsed search string. The zero value matches everything.
 type Query struct {
 	// groups are ANDed; the terms inside one group are ORed.
-	groups        [][]term
-	caseSensitive bool
+	groups [][]term
 }
 
-var initAlgo sync.Once
+var (
+	initAlgo sync.Once
+	spaces   = regexp.MustCompile(" +")
+)
 
-// Parse parses s with fzf's extended search syntax.
+// Parse parses s with fzf's extended search syntax, where a plain term
+// matches fuzzily.
 func Parse(s string) Query {
+	return parse(s, true)
+}
+
+// ParseExact parses s as fzf --exact does: a plain term matches exactly,
+// and a leading ' makes a term fuzzy instead.
+func ParseExact(s string) Query {
+	return parse(s, false)
+}
+
+// parse follows fzf's parseTerms (src/pattern.go), with fzf's defaults of
+// smart case and normalization.
+func parse(s string, fuzzyByDefault bool) Query {
 	initAlgo.Do(func() { algo.Init("default") })
 
-	// fzf's smart case: an uppercase letter anywhere makes the whole query
-	// case sensitive.
-	q := Query{caseSensitive: strings.ToLower(s) != s}
-	orNext := false
-	for _, token := range strings.Fields(s) {
-		if token == "|" {
-			orNext = len(q.groups) > 0
+	var q Query
+	var group []term
+	newGroup, afterBar := false, false
+	// "\ " is a literal space inside a term.
+	s = strings.ReplaceAll(s, "\\ ", "\t")
+	for _, token := range spaces.Split(s, -1) {
+		text := strings.ReplaceAll(token, "\t", " ")
+		lower := strings.ToLower(text)
+		// Smart case is decided per term.
+		t := term{
+			kind:          fuzzy,
+			caseSensitive: text != lower,
+			normalize:     lower == string(algo.NormalizeRunes([]rune(lower))),
+		}
+		if !t.caseSensitive {
+			text = lower
+		}
+		if !fuzzyByDefault {
+			t.kind = exact
+		}
+
+		if len(group) > 0 && !afterBar && text == "|" {
+			newGroup, afterBar = false, true
 			continue
 		}
-		t, ok := parseTerm(token, q.caseSensitive)
-		if !ok {
+		afterBar = false
+
+		if strings.HasPrefix(text, "!") {
+			t.negated, t.kind = true, exact
+			text = text[1:]
+		}
+		if text != "$" && strings.HasSuffix(text, "$") {
+			t.kind = suffix
+			text = text[:len(text)-1]
+		}
+		switch {
+		case len(text) > 2 && strings.HasPrefix(text, "'") && strings.HasSuffix(text, "'"):
+			t.kind = boundary
+			text = text[1 : len(text)-1]
+		case strings.HasPrefix(text, "'"):
+			// A quote flips exactness.
+			if fuzzyByDefault && !t.negated {
+				t.kind = exact
+			} else {
+				t.kind = fuzzy
+			}
+			text = text[1:]
+		case strings.HasPrefix(text, "^"):
+			if t.kind == suffix {
+				t.kind = equal
+			} else {
+				t.kind = prefix
+			}
+			text = text[1:]
+		}
+
+		if text == "" {
 			continue
 		}
-		if orNext {
-			last := len(q.groups) - 1
-			q.groups[last] = append(q.groups[last], t)
-		} else {
-			q.groups = append(q.groups, []term{t})
+		if newGroup {
+			q.groups = append(q.groups, group)
+			group = nil
 		}
-		orNext = false
+		t.text = []rune(text)
+		if t.normalize {
+			t.text = algo.NormalizeRunes(t.text)
+		}
+		group = append(group, t)
+		newGroup = true
+	}
+	if len(group) > 0 {
+		q.groups = append(q.groups, group)
 	}
 	return q
-}
-
-func parseTerm(token string, caseSensitive bool) (term, bool) {
-	t := term{kind: fuzzy}
-	if strings.HasPrefix(token, "!") {
-		t.negated = true
-		// As in fzf, a negated term matches exactly unless marked otherwise.
-		t.kind = exact
-		token = token[1:]
-	}
-	switch {
-	case strings.HasPrefix(token, "'") && len(token) > 1:
-		t.kind = exact
-		token = token[1:]
-	case strings.HasPrefix(token, "^") && strings.HasSuffix(token, "$") && len(token) > 2:
-		t.kind = equal
-		token = token[1 : len(token)-1]
-	case strings.HasPrefix(token, "^") && len(token) > 1:
-		t.kind = prefix
-		token = token[1:]
-	case strings.HasSuffix(token, "$") && len(token) > 1:
-		t.kind = suffix
-		token = token[:len(token)-1]
-	}
-	if token == "" {
-		return term{}, false
-	}
-	if !caseSensitive {
-		token = strings.Map(unicode.ToLower, token)
-	}
-	t.text = algo.NormalizeRunes([]rune(token))
-	return t, true
 }
 
 // Empty reports whether q has no terms, so that it matches every line.
@@ -177,6 +216,8 @@ func (q Query) matchTerm(t term, chars *util.Chars, withPos bool) (algo.Result, 
 	switch t.kind {
 	case exact:
 		fn = algo.ExactMatchNaive
+	case boundary:
+		fn = algo.ExactMatchBoundary
 	case prefix:
 		fn = algo.PrefixMatch
 	case suffix:
@@ -186,8 +227,7 @@ func (q Query) matchTerm(t term, chars *util.Chars, withPos bool) (algo.Result, 
 	default:
 		fn = algo.FuzzyMatchV2
 	}
-	// normalize is on as in fzf's default, which folds accented letters.
-	res, pos := fn(q.caseSensitive, true, true, chars, t.text, withPos, nil)
+	res, pos := fn(t.caseSensitive, t.normalize, true, chars, t.text, withPos, nil)
 	if !withPos || res.Start < 0 || t.negated {
 		return res, nil
 	}

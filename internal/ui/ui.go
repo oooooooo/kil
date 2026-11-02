@@ -5,7 +5,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/oooooooo/kil/internal/picker"
-	"github.com/oooooooo/kil/internal/query"
 )
 
 // An Outcome is how the picker ended.
@@ -27,8 +26,7 @@ const (
 // A Model is the picker's Bubble Tea model.
 type Model struct {
 	picker    *picker.Picker
-	query     []rune
-	parsed    query.Query
+	input     lineInput
 	label     string
 	total     int
 	reload    func() ([]picker.Item, error)
@@ -53,8 +51,7 @@ func New(items []picker.Item, initial, label string, reload func() ([]picker.Ite
 	p.SetQuery(initial)
 	return Model{
 		picker: p,
-		query:  []rune(initial),
-		parsed: query.Parse(initial),
+		input:  newLineInput(initial),
 		label:  label,
 		total:  len(items),
 		reload: reload,
@@ -63,8 +60,14 @@ func New(items []picker.Item, initial, label string, reload func() ([]picker.Ite
 	}
 }
 
+// WithExact returns m with plain terms matching exactly, as fzf --exact.
+func (m Model) WithExact(exact bool) Model {
+	m.picker.SetExact(exact)
+	return m
+}
+
 // Query returns the current query.
-func (m Model) Query() string { return string(m.query) }
+func (m Model) Query() string { return m.input.String() }
 
 // Outcome returns how the picker ended.
 func (m Model) Outcome() Outcome { return m.outcome }
@@ -108,6 +111,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if k.Alt && k.Type == tea.KeyRunes && len(k.Runes) == 1 {
+		switch k.Runes[0] {
+		case 'a':
+			m.picker.SelectAllShown()
+		case 'b':
+			m.input.wordLeft()
+		case 'f':
+			m.input.wordRight()
+		}
+		return m, nil
+	}
+
+	before := m.input.String()
 	switch k.Type {
 	case tea.KeyCtrlC, tea.KeyEsc:
 		m.outcome = Aborted
@@ -124,7 +140,7 @@ func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	// The list grows upward from the prompt, as in fzf's default layout, so
 	// moving up on screen goes to the next row and down to the previous.
-	case tea.KeyUp, tea.KeyCtrlP, tea.KeyCtrlK:
+	case tea.KeyUp, tea.KeyCtrlP:
 		m.picker.Next()
 	case tea.KeyDown, tea.KeyCtrlN, tea.KeyCtrlJ:
 		m.picker.Prev()
@@ -132,8 +148,9 @@ func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.picker.Toggle(-1) // fzf's toggle+down
 	case tea.KeyShiftTab:
 		m.picker.Toggle(1) // fzf's toggle+up
-	case tea.KeyCtrlA:
-		m.picker.SelectAllShown()
+	case tea.KeyCtrlX:
+		m.picker.SetExact(!m.picker.Exact())
+		m.offset = 0
 	case tea.KeyCtrlR:
 		if m.reloading {
 			return m, nil
@@ -144,23 +161,36 @@ func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			items, err := reload()
 			return reloadMsg{items, err}
 		}
-	case tea.KeyBackspace:
-		if len(m.query) > 0 {
-			m.setQuery(m.query[:len(m.query)-1])
-		}
+
+	// The query is edited with readline's keys.
+	case tea.KeyCtrlA, tea.KeyHome:
+		m.input.home()
+	case tea.KeyCtrlE, tea.KeyEnd:
+		m.input.end()
+	case tea.KeyLeft, tea.KeyCtrlB:
+		m.input.left()
+	case tea.KeyRight, tea.KeyCtrlF:
+		m.input.right()
+	case tea.KeyBackspace, tea.KeyCtrlH:
+		m.input.backspace()
+	case tea.KeyDelete:
+		m.input.deleteChar()
+	case tea.KeyCtrlK:
+		m.input.killToEnd()
 	case tea.KeyCtrlU:
-		m.setQuery(nil)
+		m.input.killToStart()
+	case tea.KeyCtrlW:
+		m.input.killWordBack()
 	case tea.KeySpace:
-		m.setQuery(append(m.query, ' '))
+		m.input.insert([]rune{' '})
 	case tea.KeyRunes:
-		m.setQuery(append(m.query, k.Runes...))
+		m.input.insert(k.Runes)
+	}
+	// Moving the caret keeps the list as it is; only a changed query filters
+	// again and moves the cursor back to the best match.
+	if m.input.String() != before {
+		m.picker.SetQuery(m.input.String())
+		m.offset = 0
 	}
 	return m, nil
-}
-
-func (m *Model) setQuery(q []rune) {
-	m.query = append([]rune(nil), q...)
-	m.picker.SetQuery(string(m.query))
-	m.parsed = query.Parse(string(m.query))
-	m.offset = 0
 }

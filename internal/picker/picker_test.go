@@ -263,3 +263,22 @@ func TestOnlyNegatedTermsKeepInputOrder(t *testing.T) {
 		t.Errorf("Rows() = %v, want %v", got, want)
 	}
 }
+
+func TestExactModeMatchesSubstringsOnly(t *testing.T) {
+	p := New(items("101 ruby app.rb", "202 resolve /usr/lib/systemd"))
+	p.SetQuery("ruby")
+	if got := texts(p.Rows()); len(got) != 2 {
+		t.Fatalf("fuzzy Rows() = %v, want both lines", got)
+	}
+	p.SetExact(true)
+	if got := texts(p.Rows()); !slices.Equal(got, []string{"101 ruby app.rb"}) {
+		t.Errorf("exact Rows() = %v, want only the ruby line", got)
+	}
+	if !p.Exact() {
+		t.Error("Exact() = false after SetExact(true)")
+	}
+	p.SetExact(false)
+	if got := texts(p.Rows()); len(got) != 2 {
+		t.Errorf("Rows() after SetExact(false) = %v, want both lines again", got)
+	}
+}

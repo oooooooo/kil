@@ -145,11 +145,11 @@ func (m Model) View() string {
 		lines = append(lines, line)
 	}
 
-	header := fmt.Sprintf("kil: type to filter, Tab to select, Ctrl-A to select all shown, Ctrl-R to refresh, Enter to send %s to selected/current line (Ctrl-C to abort)", m.label)
+	header := fmt.Sprintf("kil: type to filter, Tab to select, Alt-A to select all shown, Ctrl-X to toggle exact match, Ctrl-R to refresh, Enter to send %s to selected/current line (Ctrl-C to abort)", m.label)
 	lines = append(lines,
 		"  "+fg(colorHeader)+cut(header, m.width-3)+reset,
 		m.infoLine(len(rows)),
-		bold+fg(colorPrompt)+">"+reset+fg(colorPrompt)+" "+reset+bold+string(m.query)+reset+"\x1b[7m \x1b[0m",
+		bold+fg(colorPrompt)+">"+reset+fg(colorPrompt)+" "+reset+m.promptText(),
 	)
 	return strings.Join(lines, "\n")
 }
@@ -169,8 +169,25 @@ func (m Model) scrollbar(total, offset, height int) []bool {
 	return bar
 }
 
+// promptText draws the query in bold with a reverse-video caret, standing in
+// for the terminal cursor that fzf places there.
+func (m Model) promptText() string {
+	r := m.input.runes
+	pos := m.input.pos
+	caret := " "
+	after := ""
+	if pos < len(r) {
+		caret = string(r[pos])
+		after = string(r[pos+1:])
+	}
+	return bold + string(r[:pos]) + reset + "\x1b[7m" + caret + reset + bold + after + reset
+}
+
 func (m Model) infoLine(shown int) string {
 	info := fmt.Sprintf("%d/%d (%d)", shown, m.total, m.picker.SelectedCount())
+	if m.picker.Exact() {
+		info += " [exact]"
+	}
 	// As in fzf, the rule stops one column short of the edge.
 	rule := max(m.width-2-widths.StringWidth(info)-2, 0)
 	return "  " + fg(colorInfo) + info + reset + " " + fg(colorBorder) + strings.Repeat("─", rule) + reset
@@ -205,7 +222,7 @@ func (m Model) renderRow(r picker.Row, focused bool) string {
 			styles[i].fg = c
 		}
 	}
-	positions := m.parsed.Positions(r.Item.Text)
+	positions := m.picker.Query().Positions(r.Item.Text)
 	for _, p := range positions {
 		if p < len(styles) {
 			styles[p].fg = colorMatch

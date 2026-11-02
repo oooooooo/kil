@@ -39,6 +39,10 @@ func typed(s string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
 }
 
+func alt(r rune) tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: true}
+}
+
 func key(t tea.KeyType) tea.KeyMsg {
 	return tea.KeyMsg{Type: t}
 }
@@ -128,9 +132,9 @@ func TestEscAndCtrlCAbort(t *testing.T) {
 	}
 }
 
-func TestCtrlASelectsEveryShownRow(t *testing.T) {
+func TestAltASelectsEveryShownRow(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b", "203 python c"), "python", "SIGKILL", noReload))
-	m, _ = press(m, key(tea.KeyCtrlA), key(tea.KeyEnter))
+	m, _ = press(m, alt('a'), key(tea.KeyEnter))
 	if got := targetTexts(m); !slices.Equal(got, []string{"202 python b", "203 python c"}) {
 		t.Errorf("Targets() = %v", got)
 	}
@@ -376,5 +380,96 @@ func TestShiftedLineShowsAShortTail(t *testing.T) {
 	view := plain(m.View())
 	if !strings.Contains(view, "needle tail") || strings.Contains(view, "tail··") {
 		t.Errorf("shifted line does not end with the short tail:\n%s", view)
+	}
+}
+
+func editing(t *testing.T, want string, keys ...tea.KeyMsg) {
+	t.Helper()
+	m := sized(New(items("101 ruby a"), "", "SIGKILL", noReload))
+	m, _ = press(m, keys...)
+	if m.Query() != want {
+		t.Errorf("Query() = %q, want %q", m.Query(), want)
+	}
+}
+
+func TestLineEditingKeys(t *testing.T) {
+	left, right := key(tea.KeyLeft), key(tea.KeyRight)
+	t.Run("Ctrl-A moves to the start", func(t *testing.T) {
+		editing(t, "ruby", typed("uby"), key(tea.KeyCtrlA), typed("r"))
+	})
+	t.Run("Home moves to the start", func(t *testing.T) {
+		editing(t, "ruby", typed("uby"), key(tea.KeyHome), typed("r"))
+	})
+	t.Run("Ctrl-E moves to the end", func(t *testing.T) {
+		editing(t, "ruby", typed("rub"), key(tea.KeyCtrlA), key(tea.KeyCtrlE), typed("y"))
+	})
+	t.Run("End moves to the end", func(t *testing.T) {
+		editing(t, "ruby", typed("rub"), key(tea.KeyHome), key(tea.KeyEnd), typed("y"))
+	})
+	t.Run("Left and Right move by a character", func(t *testing.T) {
+		editing(t, "ruby", typed("ry"), left, left, right, typed("ub"))
+	})
+	t.Run("Ctrl-B and Ctrl-F move by a character", func(t *testing.T) {
+		editing(t, "ruby", typed("ry"), key(tea.KeyCtrlB), key(tea.KeyCtrlB), key(tea.KeyCtrlF), typed("ub"))
+	})
+	t.Run("Alt-B moves to the previous word", func(t *testing.T) {
+		editing(t, "node ruby", typed("node uby"), alt('b'), typed("r"))
+	})
+	t.Run("Alt-F moves past the next word", func(t *testing.T) {
+		editing(t, "nodes ruby", typed("node ruby"), key(tea.KeyCtrlA), alt('f'), typed("s"))
+	})
+	t.Run("Ctrl-K deletes to the end", func(t *testing.T) {
+		editing(t, "ruby", typed("rubyxx"), left, left, key(tea.KeyCtrlK))
+	})
+	t.Run("Ctrl-U deletes to the start", func(t *testing.T) {
+		editing(t, "ruby", typed("xxruby"), key(tea.KeyCtrlA), right, right, key(tea.KeyCtrlU))
+	})
+	t.Run("Ctrl-W deletes the previous word", func(t *testing.T) {
+		editing(t, "node ", typed("node ruby"), key(tea.KeyCtrlW))
+	})
+	t.Run("Backspace deletes before the cursor", func(t *testing.T) {
+		editing(t, "ruby", typed("rubby"), left, left, key(tea.KeyBackspace))
+	})
+	t.Run("Delete deletes at the cursor", func(t *testing.T) {
+		editing(t, "ruby", typed("ruxby"), left, left, left, key(tea.KeyDelete))
+	})
+	t.Run("typing inserts at the cursor", func(t *testing.T) {
+		editing(t, "ruby", typed("rby"), key(tea.KeyCtrlA), right, typed("u"))
+	})
+}
+
+func TestCaretIsDrawnAtTheCursor(t *testing.T) {
+	m := sized(New(items("101 ruby a"), "", "SIGKILL", noReload))
+	m, _ = press(m, typed("ruby"), key(tea.KeyCtrlA))
+	lines := strings.Split(m.View(), "\n")
+	prompt := lines[len(lines)-1]
+	if !strings.Contains(prompt, "\x1b[7mr") {
+		t.Errorf("caret is not on the first character:\n%q", prompt)
+	}
+	if got := strings.TrimRight(plain(prompt), " "); got != "> ruby" {
+		t.Errorf("prompt = %q, want \"> ruby\"", got)
+	}
+}
+
+func TestCtrlXTogglesExactMatching(t *testing.T) {
+	m := sized(New(items("101 ruby a", "202 resolve /usr/lib/systemd"), "ruby", "SIGKILL", noReload))
+	if strings.Contains(plain(m.View()), "[exact]") {
+		t.Errorf("fuzzy mode shows [exact]:\n%s", plain(m.View()))
+	}
+	m, _ = press(m, key(tea.KeyCtrlX))
+	view := plain(m.View())
+	if strings.Contains(view, "resolve") || !strings.Contains(view, "[exact]") {
+		t.Errorf("Ctrl-X did not switch to exact matching:\n%s", view)
+	}
+	m, _ = press(m, key(tea.KeyCtrlX))
+	if !strings.Contains(plain(m.View()), "resolve") {
+		t.Errorf("second Ctrl-X did not switch back to fuzzy matching:\n%s", plain(m.View()))
+	}
+}
+
+func TestWithExactStartsInExactMode(t *testing.T) {
+	m := sized(New(items("101 ruby a", "202 resolve /usr/lib/systemd"), "ruby", "SIGKILL", noReload).WithExact(true))
+	if strings.Contains(plain(m.View()), "resolve") {
+		t.Errorf("WithExact(true) still matches fuzzily:\n%s", plain(m.View()))
 	}
 }

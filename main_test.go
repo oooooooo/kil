@@ -47,11 +47,49 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"node", "dev"}, "node dev"},
 		{[]string{"--", "-zsh"}, "-zsh"},
 		{[]string{"--", "--help"}, "--help"},
+		{[]string{"--", "-e"}, "-e"},
 	}
 	for _, tt := range tests {
 		got, err := parseArgs(tt.args)
-		if err != nil || got.query != tt.query || got.help {
+		if err != nil || got.query != tt.query || got.help || got.exact {
 			t.Errorf("parseArgs(%q) = %+v, %v; want query %q", tt.args, got, err, tt.query)
 		}
+	}
+}
+
+func TestExactOption(t *testing.T) {
+	for _, args := range [][]string{{"-e", "ruby"}, {"--exact", "ruby"}, {"-e", "--", "ruby"}} {
+		got, err := parseArgs(args)
+		if err != nil || !got.exact || got.query != "ruby" {
+			t.Errorf("parseArgs(%q) = %+v, %v; want exact with query \"ruby\"", args, got, err)
+		}
+	}
+}
+
+func TestExactFromEnvironment(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool
+	}{
+		{"", false},
+		{"0", false},
+		{"1", true},
+		{"true", true},
+	}
+	for _, tt := range tests {
+		got, err := exactFromEnv(tt.value)
+		if err != nil || got != tt.want {
+			t.Errorf("exactFromEnv(%q) = %v, %v; want %v", tt.value, got, err, tt.want)
+		}
+	}
+	if _, err := exactFromEnv("yes please"); err == nil {
+		t.Error("exactFromEnv(\"yes please\") succeeded, want an error")
+	}
+}
+
+func TestInvalidExactEnvironmentIsRejected(t *testing.T) {
+	code, _, errOut := runKil(t, map[string]string{"KIL_EXACT": "maybe"})
+	if code != 2 || !strings.Contains(errOut, "KIL_EXACT") {
+		t.Errorf("KIL_EXACT=maybe kil = %d, %q; want 2 and a KIL_EXACT error", code, errOut)
 	}
 }

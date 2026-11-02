@@ -35,6 +35,8 @@ type Row struct {
 // A Picker is the filter, selection, and cursor state of one kil session.
 type Picker struct {
 	items    []Item
+	text     string
+	exact    bool
 	query    query.Query
 	selected map[string]bool
 	rows     []Row
@@ -66,7 +68,33 @@ func (p *Picker) SelectedCount() int {
 
 // SetQuery filters the rows with s and moves the cursor to the first row.
 func (p *Picker) SetQuery(s string) {
-	p.query = query.Parse(s)
+	p.text = s
+	p.reparse()
+}
+
+// SetExact switches between fuzzy matching and fzf --exact matching, where
+// plain terms match substrings, and moves the cursor to the first row.
+func (p *Picker) SetExact(exact bool) {
+	p.exact = exact
+	p.reparse()
+}
+
+// Exact reports whether plain terms match exactly.
+func (p *Picker) Exact() bool {
+	return p.exact
+}
+
+// Query returns the parsed query in the current mode.
+func (p *Picker) Query() query.Query {
+	return p.query
+}
+
+func (p *Picker) reparse() {
+	if p.exact {
+		p.query = query.ParseExact(p.text)
+	} else {
+		p.query = query.Parse(p.text)
+	}
 	p.refresh()
 	p.cursor = 0
 }

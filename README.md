@@ -27,24 +27,51 @@ go install github.com/oooooooo/kil@latest
 kil            # browse all processes
 kil node       # start with "node" as the initial query
 kil node dev   # arguments are joined into one query: "node dev"
+kil -e ruby    # exact match: only lines that contain "ruby"
 kil -- -zsh    # use -- when the query starts with "-"
 kil --help     # show usage
 ```
 
-The query uses fzf's search syntax: terms
-separated by spaces must all match, and `node | python` matches either.
-`'exact`, `^prefix`, `suffix$`, and `!exclude` work as in fzf.
+### Query syntax
+
+The query uses fzf's search syntax. Terms separated by spaces must all match.
+
+| Query | Matches lines that |
+| --- | --- |
+| `ruby` | contain `r`, `u`, `b`, `y` in this order (fuzzy; also matches `resolve /usr/lib/systemd`) |
+| `'ruby` | contain `ruby` |
+| `'ruby'` | contain `ruby` as a whole word |
+| `.rb$` | end with `.rb` |
+| `^ruby` | start with `ruby` (rarely useful: lines start with the PID) |
+| `!ruby` | do not contain `ruby` |
+| `!'rby` | do not fuzzy-match `rby` |
+| `ruby \| node` | match `ruby` or `node` |
+| `ruby\ app` | contain `ruby app`, with the space (`\` escapes it) |
+
+A term with an uppercase letter is case sensitive; other terms are not.
+
+With `-e` / `--exact`, `KIL_EXACT=1`, or after pressing `Ctrl-X`, plain terms
+match exactly as with fzf `--exact`, and a leading `'` makes a term fuzzy
+instead. The info line shows `[exact]` in this mode.
+
+### Keys
 
 | Key | Action |
 | --- | --- |
 | type | Filter the process list in real time |
-| `Ctrl-U` | Clear the query |
 | `Up` / `Down` | Move the cursor (also `Ctrl-P` / `Ctrl-N`). As in fzf, the best match is at the bottom |
 | `Tab` / `Shift-Tab` | Select or deselect the process under the cursor and move down / up. Selected processes are pinned next to the prompt, so you can select under one query, change the query, and select more |
-| `Ctrl-A` | Select every process currently shown |
+| `Alt-A` | Select every process currently shown |
+| `Ctrl-X` | Switch between fuzzy and exact matching |
 | `Ctrl-R` | Refresh the process list, keeping your query and selections |
 | `Enter` | Kill the selected processes, or the one under the cursor if none are selected |
 | `Ctrl-C` / `Esc` | Abort without killing anything |
+
+The query is edited with readline's keys: `Ctrl-A` / `Ctrl-E` (or `Home` /
+`End`) move to the start / end, `Ctrl-B` / `Ctrl-F` (or `Left` / `Right`) and
+`Alt-B` / `Alt-F` move by a character and a word, and `Ctrl-U`, `Ctrl-K`,
+`Ctrl-W`, `Backspace`, and `Delete` delete to the start, to the end, the
+previous word, and a character.
 
 Each result is reported as `sent SIGKILL:` (or whichever signal you chose),
 `skipped:`, or `failed:` (e.g. no permission).
@@ -55,7 +82,7 @@ Each result is reported as `sent SIGKILL:` (or whichever signal you chose),
 | --- | --- |
 | `0` | Every selected process was signalled |
 | `1` | Nothing was selected, or some processes were skipped or failed |
-| `2` | Usage error, invalid `KIL_SIGNAL`, listing processes failed, or no terminal |
+| `2` | Usage error, invalid `KIL_SIGNAL` or `KIL_EXACT`, listing processes failed, or no terminal |
 | `130` | Aborted with `Ctrl-C` / `Esc` |
 
 ## Configuration
@@ -63,6 +90,7 @@ Each result is reported as `sent SIGKILL:` (or whichever signal you chose),
 | Environment variable | Default | Description |
 | --- | --- | --- |
 | `KIL_SIGNAL` | `9` (SIGKILL) | Signal number or name to send, e.g. `KIL_SIGNAL=15 kil` or `KIL_SIGNAL=TERM kil`. Invalid values, and numbers without a name such as Linux real-time signals, are rejected. |
+| `KIL_EXACT` | unset (fuzzy) | Set to `1` to start in exact mode, as with `-e`. |
 
 ## Notes
 

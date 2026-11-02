@@ -101,6 +101,9 @@ Each result is reported as `sent SIGKILL:` (or whichever signal you chose),
 - `kil` hides only itself and its children. The shell you started `kil` from,
   other `kil` sessions, and `sudo` stay in the list; be careful not to select
   those.
+- The PID, PPID, USER, and COMM columns always stay on screen. When a match is
+  beyond the right edge, only the command line after them scrolls, with `··`
+  marking the cut.
 - The process list is a snapshot taken when `kil` starts; press `Ctrl-R` to
   refresh it if processes have appeared, exited, or changed.
 - Before sending a signal, `kil` re-checks that each selected PID still shows

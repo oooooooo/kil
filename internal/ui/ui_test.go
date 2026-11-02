@@ -261,17 +261,20 @@ func TestSelectedRowShowsMarker(t *testing.T) {
 	}
 }
 
+// The PID, PPID, USER, and COMM columns stay visible, as fzf --freeze-left=4,
+// and only the command line scrolls to show the match.
 func TestLongLineShiftsToShowTheMatch(t *testing.T) {
-	long := "101 java " + strings.Repeat("x", 100) + " needle"
+	long := "  101     1 alice    node            " + "/usr/bin/node " + strings.Repeat("x", 100) + " needle"
 	m := sized(New(items(long), "'needle", "SIGKILL", noReload))
-	view := plain(m.View())
-	if !strings.Contains(view, "··") || !strings.Contains(view, "needle") {
-		t.Errorf("long line does not show the match with an ellipsis:\n%s", view)
+	row := viewLines(m)[len(viewLines(m))-4]
+	if !strings.HasPrefix(row, "▌   101     1 alice    node            ··") {
+		t.Errorf("row does not keep the leading columns before the ellipsis:\n%q", row)
 	}
-	for _, l := range strings.Split(view, "\n") {
-		if w := ansi.StringWidth(l); w > 80 {
-			t.Errorf("line is %d columns wide, want at most 80: %q", w, l)
-		}
+	if !strings.Contains(row, "needle") {
+		t.Errorf("row does not show the match:\n%q", row)
+	}
+	if w := ansi.StringWidth(row); w > 80 {
+		t.Errorf("row is %d columns wide, want at most 80: %q", w, row)
 	}
 }
 
@@ -366,7 +369,7 @@ func TestTabMovesDownTowardTheBestMatch(t *testing.T) {
 // As fzf with its default --hscroll-off=10, a shifted line keeps 10 columns
 // after the last match visible.
 func TestShiftedLineKeepsTenColumnsAfterTheMatch(t *testing.T) {
-	long := "101 " + strings.Repeat("x", 100) + "needle" + "abcdefghijklmnopqrstuvwxyz"
+	long := "  101     1 alice    node            " + strings.Repeat("x", 100) + "needle" + "abcdefghijklmnopqrstuvwxyz"
 	m := sized(New(items(long), "'needle", "SIGKILL", noReload))
 	view := plain(m.View())
 	if !strings.Contains(view, "needleabcdefghij··") {
@@ -376,7 +379,7 @@ func TestShiftedLineKeepsTenColumnsAfterTheMatch(t *testing.T) {
 
 // When little follows the match, fzf shows the line up to its end.
 func TestShiftedLineShowsAShortTail(t *testing.T) {
-	long := "101 " + strings.Repeat("x", 100) + "needle tail"
+	long := "  101     1 alice    node            " + strings.Repeat("x", 100) + "needle tail"
 	m := sized(New(items(long), "'needle", "SIGKILL", noReload))
 	view := plain(m.View())
 	if !strings.Contains(view, "needle tail") || strings.Contains(view, "tail··") {
@@ -484,5 +487,28 @@ func TestAltATogglesEveryShownRow(t *testing.T) {
 	m, _ = press(m, alt('a'))
 	if !strings.Contains(plain(m.View()), "(0)") {
 		t.Errorf("second Alt-A did not deselect both rows:\n%s", plain(m.View()))
+	}
+}
+
+// A selected row pinned under another query scrolls the same way, so its
+// PID stays visible.
+func TestPinnedRowKeepsTheLeadingColumns(t *testing.T) {
+	long := "  101     1 alice    node            " + strings.Repeat("x", 100) + " needle"
+	m := sized(New(items(long, "  202     1 bob      sleep           sleep 60"), "", "SIGKILL", noReload))
+	m, _ = press(m, key(tea.KeyTab), typed("'needle"))
+	if !strings.Contains(plain(m.View()), "┃  101     1 alice    node            ··") {
+		t.Errorf("pinned row lost its leading columns:\n%s", plain(m.View()))
+	}
+}
+
+// When the frozen columns alone fill the screen, the line is cut on the
+// right instead.
+func TestNarrowScreenCutsOnTheRight(t *testing.T) {
+	long := "  101     1 alice    node            " + strings.Repeat("x", 100) + " needle"
+	next, _ := New(items(long), "'needle", "SIGKILL", noReload).Update(tea.WindowSizeMsg{Width: 30, Height: 10})
+	m := next.(Model)
+	row := viewLines(m)[len(viewLines(m))-4]
+	if !strings.HasPrefix(row, "▌   101     1 alice") || ansi.StringWidth(row) > 30 {
+		t.Errorf("narrow row = %q, want the leading columns cut to 30 columns", row)
 	}
 }

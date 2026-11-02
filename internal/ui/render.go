@@ -237,26 +237,69 @@ func (m Model) renderRow(r picker.Row, focused bool) string {
 	if len(positions) > 0 {
 		matchEnd = positions[len(positions)-1] + 1
 	}
-	from, to, cutLeft, cutRight := visibleRange(text, matchEnd, width)
+
+	// The PID, PPID, USER, and COMM columns never scroll away, as with fzf
+	// --freeze-left=4: without them the user cannot tell which process a
+	// row is. Only the command line after them scrolls to show the match.
+	frozen := fieldsEnd(text, frozenFields)
+	frozenWidth := runesWidth(text[:frozen])
+	if frozenWidth+widths.StringWidth(ellipsis) >= width {
+		// No room to scroll: cut the whole line on the right.
+		frozen, frozenWidth, matchEnd = 0, 0, 0
+	}
+	from, to, cutLeft, cutRight := visibleRange(text[frozen:], max(matchEnd-frozen, 0), width-frozenWidth)
+	from += frozen
+	to += frozen
+
 	var b strings.Builder
 	b.WriteString(gutter + marker)
+	var current *style
+	write := func(lo, hi int) {
+		for i := lo; i < hi; i++ {
+			if current == nil || *current != styles[i] {
+				s := styles[i]
+				current = &s
+				b.WriteString(s.sgr())
+			}
+			b.WriteRune(text[i])
+		}
+	}
+	write(0, frozen)
 	if cutLeft {
 		b.WriteString(base.sgr() + ellipsis)
+		current = nil
 	}
-	var current *style
-	for i := from; i < to; i++ {
-		if current == nil || *current != styles[i] {
-			s := styles[i]
-			current = &s
-			b.WriteString(s.sgr())
-		}
-		b.WriteRune(text[i])
-	}
+	write(from, to)
 	if cutRight {
 		b.WriteString(base.sgr() + ellipsis)
 	}
 	b.WriteString(reset)
 	return b.String()
+}
+
+// frozenFields is the number of leading ps columns kept on screen: PID,
+// PPID, USER, and COMM.
+const frozenFields = 4
+
+// fieldsEnd returns the index in text just after the first n
+// whitespace-separated fields and the whitespace that follows them, as
+// fzf's default AWK-style field splitting counts them. A COMM with spaces,
+// such as "tmux: server", counts as more than one field.
+func fieldsEnd(text []rune, n int) int {
+	isSpace := func(r rune) bool { return r == ' ' || r == '\t' }
+	i := 0
+	for range n {
+		for i < len(text) && isSpace(text[i]) {
+			i++
+		}
+		for i < len(text) && !isSpace(text[i]) {
+			i++
+		}
+	}
+	for i < len(text) && isSpace(text[i]) {
+		i++
+	}
+	return i
 }
 
 // hscrollOff is fzf's default --hscroll-off: the columns kept visible after

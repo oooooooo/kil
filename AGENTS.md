@@ -42,3 +42,6 @@ Using fzf is fine, and so is writing it from scratch in Go.
   the processes the user means.
 - Pinned selections are ordered by when they were selected, so `Alt-A`, which
   selects in the order shown, does not reorder the list.
+- The PID, PPID, USER, and COMM columns never scroll away, as with fzf
+  `--freeze-left=4`. fzf's horizontal scrolling alone hid them when a match
+  was far right, so the user could not tell which process a row was.

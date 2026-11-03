@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -172,13 +173,62 @@ func TestFailedReloadEndsWithoutTargets(t *testing.T) {
 	}
 }
 
-func TestHeaderNamesTheSignal(t *testing.T) {
-	// The help text is the fzf-based kil's and needs a wide terminal to show
-	// the signal, as it did there.
-	next, _ := New(items("101 node a"), "", "SIGTERM", noReload).Update(tea.WindowSizeMsg{Width: 200, Height: 20})
-	m := next.(Model)
-	if !strings.Contains(plain(m.View()), "Enter to send SIGTERM") {
-		t.Errorf("view does not name the signal:\n%s", plain(m.View()))
+// A narrow terminal cut the full key list before the keys that matter, so
+// the header names only the selection keys and the key for the full help.
+// Enter is in it, with the signal it sends, because KIL_SIGNAL can change it.
+func TestHeaderShowsTheMainKeysOnly(t *testing.T) {
+	m := resized(New(items("101 node a"), "", "SIGTERM", noReload), 60, 20)
+	lines := viewLines(m)
+	if got, want := lines[len(lines)-3], "  Tab select, Alt-A all, Enter SIGTERM, Alt-H help"; got != want {
+		t.Errorf("header line = %q, want %q", got, want)
+	}
+}
+
+func TestAltHShowsHelpNamingTheSignal(t *testing.T) {
+	m := sized(New(items("101 node a"), "", "SIGTERM", noReload))
+	m, _ = press(m, alt('h'))
+	view := plain(m.View())
+	for _, want := range []string{"Enter", "SIGTERM", "Ctrl-X", "Ctrl-R", "Esc"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("help does not mention %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "101 node a") {
+		t.Errorf("help is drawn over the rows, but a row is shown:\n%s", view)
+	}
+}
+
+// The rows are hidden while the help is shown, so Enter must not signal
+// one; any key only closes the help.
+func TestKeyWhileHelpIsShownOnlyClosesIt(t *testing.T) {
+	m := sized(New(items("101 node a"), "", "SIGKILL", noReload))
+	m, cmd := press(m, alt('h'), key(tea.KeyEnter))
+	if m.Outcome() != Running || cmd != nil {
+		t.Errorf("Enter with the help shown: Outcome() = %v, want Running and no command", m.Outcome())
+	}
+	if !strings.Contains(plain(m.View()), "101 node a") {
+		t.Errorf("Enter did not close the help:\n%s", plain(m.View()))
+	}
+}
+
+// Esc leaves the help back to the list, as it leaves a help screen in most
+// programs; Ctrl-C still aborts.
+func TestEscWhileHelpIsShownClosesIt(t *testing.T) {
+	m := sized(New(items("101 node a"), "", "SIGKILL", noReload))
+	m, cmd := press(m, alt('h'), key(tea.KeyEsc))
+	if m.Outcome() != Running || cmd != nil {
+		t.Errorf("Esc with the help shown: Outcome() = %v, want Running and no command", m.Outcome())
+	}
+	if !strings.Contains(plain(m.View()), "101 node a") {
+		t.Errorf("Esc did not close the help:\n%s", plain(m.View()))
+	}
+}
+
+func TestCtrlCWhileHelpIsShownAborts(t *testing.T) {
+	m := sized(New(items("101 node a"), "", "SIGKILL", noReload))
+	m, _ = press(m, alt('h'), key(tea.KeyCtrlC))
+	if m.Outcome() != Aborted {
+		t.Errorf("Ctrl-C with the help shown: Outcome() = %v, want Aborted", m.Outcome())
 	}
 }
 
@@ -241,7 +291,7 @@ func TestLayoutMatchesFzf(t *testing.T) {
 	if !strings.HasPrefix(lines[n-2], "  1/2 (0) ─") {
 		t.Errorf("info line = %q, want \"  1/2 (0) ─...\"", lines[n-2])
 	}
-	if !strings.HasPrefix(lines[n-3], "  kil: type to filter") {
+	if !strings.HasPrefix(lines[n-3], "  Tab select") {
 		t.Errorf("header line = %q, want the key help", lines[n-3])
 	}
 	if !strings.HasPrefix(lines[n-4], "▌ 202 python b") {
@@ -338,9 +388,6 @@ func TestWidthsIgnoreEastAsianLocale(t *testing.T) {
 	}
 	if got := len([]rune(lines[n-2])); got != 79 {
 		t.Errorf("info line is %d columns, want 79:\n%q", got, lines[n-2])
-	}
-	if got := len([]rune(lines[n-3])); got != 79 {
-		t.Errorf("header line is %d columns, want 79:\n%q", got, lines[n-3])
 	}
 }
 
@@ -510,5 +557,183 @@ func TestNarrowScreenCutsOnTheRight(t *testing.T) {
 	row := viewLines(m)[len(viewLines(m))-4]
 	if !strings.HasPrefix(row, "▌   101     1 alice") || ansi.StringWidth(row) > 30 {
 		t.Errorf("narrow row = %q, want the leading columns cut to 30 columns", row)
+	}
+}
+
+func resized(m Model, width, height int) Model {
+	next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	return next.(Model)
+}
+
+func numberedLines(n int) []string {
+	var lines []string
+	for i := range n {
+		lines = append(lines, fmt.Sprintf("%03d proc", 100+i))
+	}
+	return lines
+}
+
+// Rows hidden below the window would still be signalled by Enter, so
+// growing the terminal must bring them back once everything fits.
+func TestGrowingTheTerminalShowsEveryRowThatFits(t *testing.T) {
+	lines := numberedLines(30)
+	m := resized(New(items(lines...), "", "SIGKILL", noReload), 80, 8)
+	for range 25 {
+		m, _ = press(m, key(tea.KeyUp))
+	}
+	m = resized(m, 80, 40)
+	view := plain(m.View())
+	for _, l := range lines {
+		if !strings.Contains(view, l) {
+			t.Fatalf("row %q is hidden although all 30 rows fit:\n%s", l, view)
+		}
+	}
+}
+
+// Bubble Tea drops the lines above the terminal's height, so on a tiny
+// terminal the view must fit, keeping the cursor row and the prompt.
+func TestTinyTerminalKeepsTheCursorRowVisible(t *testing.T) {
+	for _, height := range []int{2, 3} {
+		m := resized(New(items("101 node a"), "", "SIGKILL", noReload), 80, height)
+		lines := viewLines(m)
+		if len(lines) > height {
+			t.Errorf("height %d: view has %d lines:\n%s", height, len(lines), plain(m.View()))
+		}
+		if !strings.Contains(plain(m.View()), "101 node a") || !strings.HasPrefix(lines[len(lines)-1], ">") {
+			t.Errorf("height %d: cursor row or prompt missing:\n%s", height, plain(m.View()))
+		}
+	}
+}
+
+// With room for the prompt only, no row is visible, so Enter must not
+// signal one.
+func TestEnterDoesNothingWithoutRoomForRows(t *testing.T) {
+	m := resized(New(items("101 node a"), "", "SIGKILL", noReload), 80, 1)
+	m, cmd := press(m, key(tea.KeyEnter))
+	if m.Outcome() != Running || cmd != nil {
+		t.Errorf("Enter on a one-line terminal: Outcome() = %v, want Running and no command", m.Outcome())
+	}
+}
+
+// Control characters written to the terminal would move the caret or change
+// colors, so pasted ones become spaces, which separate terms as a newline
+// between pasted words means.
+func TestPastedControlCharactersBecomeSpaces(t *testing.T) {
+	m := sized(New(items("101 node a"), "", "SIGKILL", noReload))
+	m, _ = press(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("node\r\npy\x1b[31m"), Paste: true})
+	if got := m.Query(); got != "node  py [31m" {
+		t.Errorf("Query() = %q, want control characters replaced with spaces", got)
+	}
+}
+
+func TestInitialQueryControlCharactersBecomeSpaces(t *testing.T) {
+	m := sized(New(items("101 node a", "202 python b"), "node\npython", "SIGKILL", noReload))
+	if got := m.Query(); got != "node python" {
+		t.Errorf("Query() = %q, want \"node python\"", got)
+	}
+	if strings.Contains(plain(m.View()), "101 node a") {
+		t.Errorf("initial query not applied as \"node python\":\n%s", plain(m.View()))
+	}
+}
+
+func promptLine(m Model) string {
+	lines := strings.Split(m.View(), "\n")
+	return lines[len(lines)-1]
+}
+
+// A query wider than the terminal scrolls so that the caret stays visible.
+func TestLongQueryKeepsTheCaretVisible(t *testing.T) {
+	query := strings.Repeat("a", 60) + "END"
+	m := resized(New(items("101 node a"), query, "SIGKILL", noReload), 20, 8)
+	prompt := promptLine(m)
+	if w := ansi.StringWidth(prompt); w > 20 {
+		t.Errorf("prompt is %d columns wide, want at most 20: %q", w, plain(prompt))
+	}
+	if !strings.Contains(plain(prompt), "END") || !strings.Contains(prompt, "\x1b[7m ") {
+		t.Errorf("prompt does not show the end of the query and the caret: %q", prompt)
+	}
+	m, _ = press(m, key(tea.KeyCtrlA))
+	prompt = promptLine(m)
+	if !strings.HasPrefix(plain(prompt), "> aaa") || !strings.Contains(prompt, "\x1b[7ma") || ansi.StringWidth(prompt) > 20 {
+		t.Errorf("after Ctrl-A, prompt does not show the start with the caret: %q", prompt)
+	}
+}
+
+// On a one-line terminal no row fits, and the view must still draw the
+// prompt rather than index the scrollbar outside its lines.
+func TestOneLineTerminalDrawsOnlyThePrompt(t *testing.T) {
+	for _, n := range []int{1, 5} {
+		m := resized(New(items(numberedLines(n)...), "", "SIGKILL", noReload), 80, 1)
+		for range n {
+			m, _ = press(m, key(tea.KeyUp))
+		}
+		lines := viewLines(m)
+		if len(lines) != 1 || !strings.HasPrefix(lines[0], ">") {
+			t.Errorf("%d rows on a one-line terminal: view = %q, want the prompt only", n, lines)
+		}
+	}
+}
+
+// A selected process that exited stays on screen after Ctrl-R, so the total
+// counts it too; otherwise more rows are shown than the total.
+func TestInfoLineCountsKeptSelectionsInTheTotal(t *testing.T) {
+	reload := func() ([]picker.Item, error) { return items("202 python b"), nil }
+	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", reload))
+	m, cmd := press(m, key(tea.KeyTab), key(tea.KeyCtrlR))
+	next, _ := m.Update(cmd())
+	m = next.(Model)
+	if !strings.Contains(plain(m.View()), "2/2 (1)") {
+		t.Errorf("info line after the selected process exited, want \"2/2 (1)\":\n%s", plain(m.View()))
+	}
+}
+
+// A ZWJ emoji is one character on screen, so a query that fits must not be
+// cut inside it.
+func TestQueryThatFitsIsNotCutInsideAnEmoji(t *testing.T) {
+	query := "a👨‍👩‍👧‍👦END"
+	m := resized(New(nil, query, "SIGKILL", noReload), 8, 8)
+	m, _ = press(m, key(tea.KeyCtrlA))
+	if got := plain(promptLine(m)); got != "> "+query {
+		t.Errorf("prompt = %q, want %q", got, "> "+query)
+	}
+}
+
+// The help lists every key, so the header's short key list is not repeated
+// below it; the help takes the header's line instead.
+func TestHelpReplacesTheHeader(t *testing.T) {
+	m := resized(New(items("101 node a"), "", "SIGKILL", noReload), 80, 22)
+	m, _ = press(m, alt('h'))
+	lines := viewLines(m)
+	if strings.Contains(plain(m.View()), "Alt-H help") {
+		t.Errorf("header is shown with the help:\n%s", plain(m.View()))
+	}
+	if len(lines) != 22 || !strings.Contains(lines[len(lines)-3], "case sensitive") {
+		t.Errorf("help does not fill the header's line in a 22-line view:\n%s", plain(m.View()))
+	}
+}
+
+// The query syntax is fzf's, which a user who does not use fzf cannot
+// guess, so the help explains it below the keys.
+func TestHelpExplainsTheQuerySyntax(t *testing.T) {
+	m := resized(New(items("101 node a"), "", "SIGKILL", noReload), 80, 22)
+	m, _ = press(m, alt('h'))
+	view := plain(m.View())
+	for _, want := range []string{"Tab", "close this help", "'node", "'node'", "^node", ".js$", "!node", "a | b", "a b", "case sensitive"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("help on a 22-line terminal does not mention %q:\n%s", want, view)
+		}
+	}
+}
+
+// The keys and the query syntax are both two columns of text, so headings
+// and a blank line tell them apart.
+func TestHelpSeparatesKeysFromTheQuerySyntax(t *testing.T) {
+	m := resized(New(items("101 node a"), "", "SIGKILL", noReload), 80, 22)
+	m, _ = press(m, alt('h'))
+	lines := viewLines(m)
+	keys := slices.Index(lines, "  Keys")
+	query := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, "  Query") })
+	if keys < 0 || query < 1 || keys > query || lines[query-1] != "" {
+		t.Errorf("help has no \"Keys\" heading, or no blank line before the \"Query\" heading:\n%s", strings.Join(lines, "\n"))
 	}
 }

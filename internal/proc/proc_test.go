@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -118,5 +119,29 @@ func TestCurrentReportsExitedProcess(t *testing.T) {
 	}
 	if line, ok := Current(cmd.Process.Pid); ok {
 		t.Errorf("Current(exited %s) = %q, true; want false", strconv.Itoa(cmd.Process.Pid), line)
+	}
+}
+
+// ps cuts lines to COLUMNS when it is set, which would hide the end of long
+// command lines from matching and from the check before signalling.
+func TestLongCommandLinesAreNotCutToColumns(t *testing.T) {
+	t.Setenv("COLUMNS", "80")
+	cmd := exec.Command("sleep", "60")
+	cmd.Args[0] = strings.Repeat("x", 300) + "-tail"
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+
+	all, err := List(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(all, func(p Process) bool { return p.PID == cmd.Process.Pid })
+	if i < 0 || !strings.HasSuffix(all[i].Raw, "-tail 60") {
+		t.Fatalf("List() did not include the whole command line of %d", cmd.Process.Pid)
+	}
+	if line, ok := Current(cmd.Process.Pid); !ok || line != all[i].Line {
+		t.Errorf("Current() = %q, %v; want the whole line", line, ok)
 	}
 }

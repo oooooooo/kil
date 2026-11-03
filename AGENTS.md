@@ -45,3 +45,13 @@ Using fzf is fine, and so is writing it from scratch in Go.
 - The PID, PPID, USER, and COMM columns never scroll away, as with fzf
   `--freeze-left=4`. fzf's horizontal scrolling alone hid them when a match
   was far right, so the user could not tell which process a row was.
+- `Ctrl-R` keeps selections whose processes exited or changed, pinned until
+  deselected, and `Enter` reports them as skipped. Dropping them instead left
+  nothing selected, so `Enter` signalled the cursor line, a process the user
+  never chose.
+- The header names only `Tab`, `Alt-A`, `Enter` with its signal, and `Alt-H`,
+  and `Alt-H` shows every key in place of the list. The full key list in one
+  line was cut on narrow terminals before the keys that matter. While the help
+  is shown, any key other than `Ctrl-C` only closes it, so `Enter` cannot
+  signal a row the user cannot see, and `Esc` returns to the list rather than
+  leaving kil.

@@ -67,6 +67,7 @@ instead. The info line shows `[exact]` in this mode.
 | `Ctrl-R` | Refresh the process list, keeping your query and selections |
 | `Enter` | Kill the selected processes, or the one under the cursor if none are selected |
 | `Ctrl-C` / `Esc` | Abort without killing anything |
+| `Alt-H` | Show every key in place of the list. Any key other than `Ctrl-C`, including `Esc`, only closes it |
 
 The query is edited with readline's keys: `Ctrl-A` / `Ctrl-E` (or `Home` /
 `End`) move to the start / end, `Ctrl-B` / `Ctrl-F` (or `Left` / `Right`) and
@@ -105,7 +106,9 @@ Each result is reported as `sent SIGKILL:` (or whichever signal you chose),
   beyond the right edge, only the command line after them scrolls, with `··`
   marking the cut.
 - The process list is a snapshot taken when `kil` starts; press `Ctrl-R` to
-  refresh it if processes have appeared, exited, or changed.
+  refresh it if processes have appeared, exited, or changed. A selected
+  process that exited or changed stays selected and is reported as
+  `skipped:`, so `Enter` never falls back to the line under the cursor.
 - Before sending a signal, `kil` re-checks that each selected PID still shows
   the same line in `ps`, and reports it as `skipped:` otherwise. It cannot
   tell apart a restarted process with the identical command line. On Linux,

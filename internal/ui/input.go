@@ -9,13 +9,28 @@ type lineInput struct {
 }
 
 func newLineInput(s string) lineInput {
-	r := []rune(s)
+	r := printable([]rune(s))
 	return lineInput{runes: r, pos: len(r)}
+}
+
+// printable replaces control characters, such as pasted newlines, with
+// spaces: written to the terminal, they would move the caret or change
+// colors, and a space still separates the words they separated.
+func printable(rs []rune) []rune {
+	out := make([]rune, len(rs))
+	for i, r := range rs {
+		if unicode.IsControl(r) {
+			r = ' '
+		}
+		out[i] = r
+	}
+	return out
 }
 
 func (in lineInput) String() string { return string(in.runes) }
 
 func (in *lineInput) insert(rs []rune) {
+	rs = printable(rs)
 	out := make([]rune, 0, len(in.runes)+len(rs))
 	out = append(out, in.runes[:in.pos]...)
 	out = append(out, rs...)

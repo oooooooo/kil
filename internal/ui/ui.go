@@ -28,15 +28,16 @@ type Model struct {
 	picker    *picker.Picker
 	input     lineInput
 	label     string
-	total     int
 	reload    func() ([]picker.Item, error)
 	reloading bool
-	width     int
-	height    int
-	offset    int
-	outcome   Outcome
-	targets   []picker.Item
-	err       error
+	// help is set while Alt-H's key list is drawn in place of the rows.
+	help    bool
+	width   int
+	height  int
+	offset  int
+	outcome Outcome
+	targets []picker.Item
+	err     error
 }
 
 type reloadMsg struct {
@@ -47,13 +48,13 @@ type reloadMsg struct {
 // New returns a picker over items, filtered by initial. label names the
 // signal Enter sends, and reload lists the processes again for Ctrl-R.
 func New(items []picker.Item, initial, label string, reload func() ([]picker.Item, error)) Model {
+	input := newLineInput(initial)
 	p := picker.New(items)
-	p.SetQuery(initial)
+	p.SetQuery(input.String())
 	return Model{
 		picker: p,
-		input:  newLineInput(initial),
+		input:  input,
 		label:  label,
-		total:  len(items),
 		reload: reload,
 		width:  80,
 		height: 24,
@@ -85,8 +86,8 @@ func (m Model) Init() tea.Cmd { return nil }
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	next, cmd := m.update(msg)
 	nm := next.(Model)
-	_, cursorLine := nm.layout()
-	nm.offset = scrolled(nm.offset, cursorLine, nm.bodyHeight())
+	body, cursorLine := nm.layout()
+	nm.offset = scrolled(nm.offset, cursorLine, nm.bodyHeight(), len(body))
 	return nm, cmd
 }
 
@@ -103,7 +104,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.picker.Reload(msg.items)
-		m.total = len(msg.items)
 	case tea.KeyMsg:
 		return m.handleKey(msg)
 	}
@@ -111,6 +111,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// The help hides the rows, so a key other than Ctrl-C only closes it:
+	// Enter must not signal a row the user cannot see, and Esc goes back to
+	// the list rather than leaving kil.
+	if m.help && k.Type != tea.KeyCtrlC {
+		m.help = false
+		return m, nil
+	}
 	if k.Alt && k.Type == tea.KeyRunes && len(k.Runes) == 1 {
 		switch k.Runes[0] {
 		case 'a':
@@ -119,6 +126,8 @@ func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.input.wordLeft()
 		case 'f':
 			m.input.wordRight()
+		case 'h':
+			m.help = true
 		}
 		return m, nil
 	}
@@ -129,7 +138,8 @@ func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.outcome = Aborted
 		return m, tea.Quit
 	case tea.KeyEnter:
-		if m.reloading {
+		// Without room for rows, the cursor row is not on screen.
+		if m.reloading || m.bodyHeight() == 0 {
 			return m, nil
 		}
 		m.targets = m.picker.Targets()

@@ -35,6 +35,10 @@ type Row struct {
 // A Picker is the filter, selection, and cursor state of one kil session.
 type Picker struct {
 	items []Item
+	// gone holds selected items that a reload no longer listed. They stay
+	// pinned while selected, so that Enter does not fall back to the cursor
+	// row, which the user never chose; signalling reports them as skipped.
+	gone  []Item
 	text  string
 	exact bool
 	query query.Query
@@ -67,6 +71,18 @@ func (p *Picker) Cursor() int {
 // SelectedCount returns the number of selected items.
 func (p *Picker) SelectedCount() int {
 	return len(p.selected)
+}
+
+// Total returns the number of items: the listed ones, plus the selected ones
+// a reload no longer listed, which stay on screen.
+func (p *Picker) Total() int {
+	n := len(p.items)
+	for _, it := range p.gone {
+		if _, ok := p.selected[it.ID]; ok {
+			n++
+		}
+	}
+	return n
 }
 
 // SetQuery filters the rows with s and moves the cursor to the first row.
@@ -167,19 +183,22 @@ func (p *Picker) ClearSelection() {
 	p.refreshKeepingFocus()
 }
 
-// Reload replaces the items, keeping the query, the selections whose items
-// still exist, and the focus if its item still exists.
+// Reload replaces the items, keeping the query, the selections, and the focus
+// if its item still exists. Selected items that are no longer listed stay
+// selected until deselected.
 func (p *Picker) Reload(items []Item) {
-	p.items = slices.Clone(items)
 	present := map[string]bool{}
 	for _, it := range items {
 		present[it.ID] = true
 	}
-	for id := range p.selected {
-		if !present[id] {
-			delete(p.selected, id)
+	var gone []Item
+	for _, it := range slices.Concat(p.items, p.gone) {
+		if _, ok := p.selected[it.ID]; ok && !present[it.ID] {
+			gone = append(gone, it)
 		}
 	}
+	p.items = slices.Clone(items)
+	p.gone = gone
 	p.refreshKeepingFocus()
 }
 
@@ -227,6 +246,11 @@ func (p *Picker) refresh() {
 	}
 	var pinned []Row
 	var matches []match
+	for _, it := range p.gone {
+		if _, ok := p.selected[it.ID]; ok {
+			pinned = append(pinned, Row{Item: it, Selected: true, Pinned: true})
+		}
+	}
 	for _, it := range p.items {
 		if _, ok := p.selected[it.ID]; ok {
 			pinned = append(pinned, Row{Item: it, Selected: true, Pinned: true})

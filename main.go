@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	ossignal "os/signal"
 	"strconv"
 	"strings"
 	"syscall"
@@ -48,7 +49,15 @@ const (
 )
 
 func main() {
+	ignoreBrokenPipe()
 	os.Exit(run(os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
+}
+
+// ignoreBrokenPipe makes a write to a closed stdout, as in `kil | head -n 0`,
+// fail instead of ending kil with SIGPIPE before every selected process is
+// signalled. The report helpers ignore that failure.
+func ignoreBrokenPipe() {
+	ossignal.Ignore(syscall.SIGPIPE)
 }
 
 type options struct {
@@ -133,9 +142,14 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		reportf(stderr, "kil: %v\n", err)
 		return exitError
 	}
+	return finish(model, sig, stdout, stderr)
+}
+
+// finish reports how the picker ended and signals what it accepted.
+func finish(model ui.Model, sig syscall.Signal, stdout, stderr io.Writer) int {
 	switch model.Outcome() {
 	case ui.Aborted:
-		reportln(stderr, "kil: aborted")
+		// The user chose to leave, so there is nothing to report.
 		return exitAborted
 	case ui.NothingSelected:
 		reportln(stderr, "kil: nothing selected")

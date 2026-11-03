@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/mattn/go-runewidth"
+	"github.com/rivo/uniseg"
 
 	"github.com/oooooooo/kil/internal/picker"
 )
@@ -67,11 +68,16 @@ func (s style) sgr() string {
 }
 
 // headerLines is the number of lines below the rows: the key help, the info
-// line, and the prompt.
-const headerLines = 3
+// line, and the prompt. Bubble Tea drops the lines that do not fit, so a short
+// terminal drops the help and then the info line to keep a row on screen.
+func (m Model) headerLines() int {
+	return max(min(3, m.height-1), 1)
+}
 
+// bodyHeight is the number of lines for rows. It is 0 when the terminal has
+// room for the prompt only.
 func (m Model) bodyHeight() int {
-	return max(m.height-headerLines, 1)
+	return max(m.height-m.headerLines(), 0)
 }
 
 func (m Model) pinnedCount() int {
@@ -108,9 +114,15 @@ func (m Model) layout() ([]int, int) {
 }
 
 // scrolled returns the first line to show so that the cursor line is within
-// a window of the given height, moving the window as little as possible.
-func scrolled(offset, cursorLine, height int) int {
-	offset = min(offset, cursorLine)
+// a window of the given height, moving the window as little as possible. The
+// window never extends past the last of the total lines, so lines hidden
+// below it come back when the window grows. Without room for lines, the
+// window stays at the top, as there is no line to keep in it.
+func scrolled(offset, cursorLine, height, total int) int {
+	if height <= 0 {
+		return 0
+	}
+	offset = min(offset, cursorLine, max(total-height, 0))
 	if cursorLine >= offset+height {
 		offset = cursorLine - height + 1
 	}
@@ -123,7 +135,7 @@ func (m Model) View() string {
 	rows := m.picker.Rows()
 	body, cursorLine := m.layout()
 	height := m.bodyHeight()
-	offset := scrolled(m.offset, cursorLine, height)
+	offset := scrolled(m.offset, cursorLine, height, len(body))
 	end := min(offset+height, len(body))
 	scrollbar := m.scrollbar(len(body), offset, height)
 
@@ -145,13 +157,74 @@ func (m Model) View() string {
 		lines = append(lines, line)
 	}
 
-	header := fmt.Sprintf("kil: type to filter, Tab to select, Alt-A to select all shown, Ctrl-X to toggle exact match, Ctrl-R to refresh, Enter to send %s to selected/current line (Ctrl-C to abort)", m.label)
-	lines = append(lines,
-		"  "+fg(colorHeader)+cut(header, m.width-3)+reset,
+	// A narrow terminal cut a full key list before the keys that matter, so
+	// the header names only those, tersely, and Alt-H shows the rest. Enter
+	// names its signal, which KIL_SIGNAL can change.
+	header := "Tab select, Alt-A all, Enter " + m.label + ", Alt-H help"
+	footer := []string{
+		"  " + fg(colorHeader) + cut(header, m.width-3) + reset,
 		m.infoLine(len(rows)),
-		bold+fg(colorPrompt)+">"+reset+fg(colorPrompt)+" "+reset+m.promptText(),
-	)
+		bold + fg(colorPrompt) + ">" + reset + fg(colorPrompt) + " " + reset + m.promptText(),
+	}
+	footer = footer[len(footer)-m.headerLines():]
+	if m.help {
+		// The help lists every key, so it takes the header's line too
+		// rather than repeating the header's short list below it.
+		helpHeight := height
+		if len(footer) == 3 {
+			footer = footer[1:]
+			helpHeight++
+		}
+		lines = m.helpLines(helpHeight)
+	}
+	lines = append(lines, footer...)
 	return strings.Join(lines, "\n")
+}
+
+// helpLines draws the full key list and then the query syntax in the height
+// lines of the rows, aligned to the bottom as the rows are. On a short
+// terminal the query syntax is cut first, keeping the keys.
+func (m Model) helpLines(height int) []string {
+	entries := [][2]string{
+		{"Keys", ""},
+		{"Tab", "select or deselect, then move down"},
+		{"Shift-Tab", "select or deselect, then move up"},
+		{"Alt-A", "select all shown, or deselect them"},
+		{"Enter", "send " + m.label + " to the selected lines, or the current line"},
+		{"Up / Down", "move (also Ctrl-P / Ctrl-N)"},
+		{"Ctrl-X", "toggle exact match"},
+		{"Ctrl-R", "refresh the process list"},
+		{"Esc / Ctrl-C", "abort without sending anything"},
+		{"any key", "close this help (Ctrl-C aborts)"},
+		// The query syntax is fzf's, which users who do not use fzf
+		// cannot guess. The blank line and the headings set it apart from
+		// the keys, which are drawn the same way.
+		{"", ""},
+		{"Query", "matches lines that"},
+		{"node", "contain n, o, d, e in this order (fuzzy)"},
+		{"'node", "contain node (fuzzy in exact mode)"},
+		{"'node'", "contain node as a whole word"},
+		{"^node / .js$", "start with node / end with .js"},
+		{"!node", "do not contain node"},
+		{"a b", "match a and b"},
+		{"a | b", "match a or b"},
+		{"Node", "match case sensitive (has an uppercase letter)"},
+	}
+	entries = entries[:min(len(entries), height)]
+	lines := make([]string, height-len(entries), height)
+	for _, e := range entries {
+		switch e[0] {
+		case "":
+			lines = append(lines, "")
+		case "Keys", "Query":
+			line := strings.TrimRight(fmt.Sprintf("%-17s %s", e[0], e[1]), " ")
+			lines = append(lines, "  "+bold+fg(colorHeader)+cut(line, m.width-3)+reset)
+		default:
+			line := fmt.Sprintf("  %-15s %s", e[0], e[1])
+			lines = append(lines, "  "+fg(colorHeader)+cut(line, m.width-3)+reset)
+		}
+	}
+	return lines
 }
 
 // scrollbar returns, for each line of the window counted from the bottom,
@@ -170,21 +243,62 @@ func (m Model) scrollbar(total, offset, height int) []bool {
 }
 
 // promptText draws the query in bold with a reverse-video caret, standing in
-// for the terminal cursor that fzf places there.
+// for the terminal cursor that fzf places there. A query wider than the
+// screen scrolls, as in a shell, so that the caret stays on screen. Text is
+// kept or cut by grapheme cluster, so an emoji joined with ZWJ is never split.
 func (m Model) promptText() string {
 	r := m.input.runes
 	pos := m.input.pos
 	caret := " "
-	after := ""
 	if pos < len(r) {
 		caret = string(r[pos])
-		after = string(r[pos+1:])
 	}
-	return bold + string(r[:pos]) + reset + "\x1b[7m" + caret + reset + bold + after + reset
+	room := max(m.width-2, 1) - widths.StringWidth(caret) // after "> "
+	before := lastClusters(string(r[:pos]), room)
+	after := ""
+	if pos < len(r) {
+		after = firstClusters(string(r[pos+1:]), room-widths.StringWidth(before))
+	}
+	return bold + before + reset + "\x1b[7m" + caret + reset + bold + after + reset
+}
+
+// firstClusters returns the longest prefix of s, cut between grapheme
+// clusters, that fits within width columns.
+func firstClusters(s string, width int) string {
+	end, used := 0, 0
+	g := uniseg.NewGraphemes(s)
+	for g.Next() {
+		w := widths.StringWidth(g.Str())
+		if used+w > width {
+			break
+		}
+		used += w
+		_, end = g.Positions()
+	}
+	return s[:end]
+}
+
+// lastClusters returns the longest suffix of s, cut between grapheme
+// clusters, that fits within width columns.
+func lastClusters(s string, width int) string {
+	var starts []int
+	var ws []int
+	g := uniseg.NewGraphemes(s)
+	for g.Next() {
+		from, _ := g.Positions()
+		starts = append(starts, from)
+		ws = append(ws, widths.StringWidth(g.Str()))
+	}
+	start, used := len(s), 0
+	for i := len(ws) - 1; i >= 0 && used+ws[i] <= width; i-- {
+		used += ws[i]
+		start = starts[i]
+	}
+	return s[start:]
 }
 
 func (m Model) infoLine(shown int) string {
-	info := fmt.Sprintf("%d/%d (%d)", shown, m.total, m.picker.SelectedCount())
+	info := fmt.Sprintf("%d/%d (%d)", shown, m.picker.Total(), m.picker.SelectedCount())
 	if m.picker.Exact() {
 		info += " [exact]"
 	}

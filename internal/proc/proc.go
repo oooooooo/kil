@@ -14,6 +14,11 @@ import (
 // whole line is kept as the process's identity and display text.
 const psColumns = "pid=,ppid=,user=,comm=,args="
 
+// psWide makes ps print whole lines on Linux and macOS: without it, ps cuts
+// them to COLUMNS when that is set, hiding the end of long command lines from
+// matching and from the check before signalling.
+const psWide = "-ww"
+
 // A Process is one line of ps output.
 type Process struct {
 	PID  int
@@ -93,7 +98,7 @@ func descendsFrom(pid, ancestor int, parent map[int]int) bool {
 // hide nothing. A ps failure is an error rather than a short list, because
 // a partial list could mislead the user about what is running.
 func List(self int) ([]Process, error) {
-	out, err := exec.Command("ps", "-A", "-o", psColumns).Output()
+	out, err := exec.Command("ps", psWide, "-A", "-o", psColumns).Output()
 	if err != nil {
 		return nil, fmt.Errorf("ps failed: %w", err)
 	}
@@ -109,7 +114,7 @@ func List(self int) ([]Process, error) {
 
 // Current returns the ps line of pid now, or false if pid does not exist.
 func Current(pid int) (string, bool) {
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", psColumns).Output()
+	out, err := exec.Command("ps", psWide, "-p", strconv.Itoa(pid), "-o", psColumns).Output()
 	if err != nil {
 		return "", false
 	}

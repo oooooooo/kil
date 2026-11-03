@@ -164,12 +164,29 @@ func TestReloadKeepsSelectionsThatStillExist(t *testing.T) {
 	}
 }
 
-func TestReloadDropsSelectionsThatVanished(t *testing.T) {
+// A selected process that exited stays selected, so that Enter does not fall
+// back to the cursor row, which the user never chose.
+func TestReloadKeepsSelectionsThatVanished(t *testing.T) {
 	p := New(items("101 node a", "202 python b"))
 	p.Toggle(1) // node
 	p.Reload(items("202 python b"))
-	if p.SelectedCount() != 0 {
-		t.Errorf("SelectedCount() = %d, want 0 after the node line vanished", p.SelectedCount())
+	if got := targetTexts(p); !slices.Equal(got, []string{"101 node a"}) {
+		t.Errorf("Targets() = %v, want the vanished node line still selected", got)
+	}
+	if got := texts(p.Rows()); !slices.Contains(got, "101 node a") {
+		t.Errorf("Rows() = %v, want the vanished selection still shown", got)
+	}
+}
+
+// Once deselected, a vanished process is gone for good: it no longer
+// matches queries as if it still existed.
+func TestDeselectedVanishedItemDisappears(t *testing.T) {
+	p := New(items("101 node a", "202 python b"))
+	p.Toggle(1) // node
+	p.Reload(items("202 python b"))
+	p.ClearSelection()
+	if got := texts(p.Rows()); slices.Contains(got, "101 node a") {
+		t.Errorf("Rows() = %v, want the vanished node line gone after deselecting", got)
 	}
 }
 

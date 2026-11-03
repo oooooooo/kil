@@ -3,6 +3,7 @@ package proc
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -143,5 +144,34 @@ func TestLongCommandLinesAreNotCutToColumns(t *testing.T) {
 	}
 	if line, ok := Current(cmd.Process.Pid); !ok || line != all[i].Identity {
 		t.Errorf("Current() = %q, %v; want the whole line", line, ok)
+	}
+}
+
+// procps reads its option syntax from these variables, and with BSD syntax
+// it rejects kil's options, which left kil unable to list processes. Not
+// every option fails, so a stand-in ps fails whenever it is given one of
+// them, and otherwise runs the real ps.
+func TestPsSyntaxVariablesAreIgnored(t *testing.T) {
+	real, err := exec.LookPath("ps")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"if [ -n \"${PS_PERSONALITY+x}${CMD_ENV+x}${I_WANT_A_BROKEN_PS+x}\" ]; then exit 1; fi\n" +
+		"exec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PS_PERSONALITY", "bsd")
+	t.Setenv("CMD_ENV", "bsd")
+	t.Setenv("I_WANT_A_BROKEN_PS", "1")
+
+	if _, err := List(0); err != nil {
+		t.Errorf("List(): %v", err)
+	}
+	if _, ok := Current(os.Getpid()); !ok {
+		t.Error("Current(self) found nothing")
 	}
 }

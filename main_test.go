@@ -216,7 +216,7 @@ func TestStoppedReportsEarlierBatchesAndTheSelectionsLeft(t *testing.T) {
 	}
 	m := ui.New(its, "", "SIGKILL", nil).WithSender(func(batch []picker.Item) {
 		for _, it := range batch {
-			reportf(&b.out, "sent SIGKILL: %s\n", it.Text)
+			reportf(b.stdout(), "sent SIGKILL: %s\n", it.Text)
 		}
 	})
 	m = press(m,
@@ -247,7 +247,7 @@ func TestStoppedReportsEarlierBatchesAndTheSelectionsLeft(t *testing.T) {
 // A picker failure after a partial Enter must still print what was signalled.
 func TestPickerFailureKeepsEarlierReports(t *testing.T) {
 	var b batches
-	reportln(&b.out, "sent SIGKILL: 101 a")
+	reportln(b.stdout(), "sent SIGKILL: 101 a")
 	var stdout, stderr bytes.Buffer
 	code := pickFailed(&b, errors.New("read /dev/tty: input/output error"), &stdout, &stderr)
 	if code != exitError || !strings.Contains(stdout.String(), "sent SIGKILL: 101 a") || !strings.Contains(stderr.String(), "input/output error") {
@@ -267,7 +267,7 @@ func TestFailureAfterAPartialEnterDoesNotClaimNothingWasSignalled(t *testing.T) 
 	var b batches
 	m := ui.New(its, "", "SIGKILL", reload).WithSender(func(batch []picker.Item) {
 		for _, it := range batch {
-			reportf(&b.out, "sent SIGKILL: %s\n", it.Text)
+			reportf(b.stdout(), "sent SIGKILL: %s\n", it.Text)
 		}
 		b.sent += len(batch)
 	})
@@ -296,5 +296,34 @@ func TestFailureAfterAPartialEnterDoesNotClaimNothingWasSignalled(t *testing.T) 
 	}
 	if got, want := strings.Count(stderr.String(), "skipped: not signalled: "), 14; got != want {
 		t.Errorf("stderr reports %d selections left, want %d:\n%s", got, want, stderr.String())
+	}
+}
+
+// When stdout and stderr go to the same file, the reports held during the
+// picker must come out in the order the processes were handled.
+func TestHeldReportsKeepTheirOrder(t *testing.T) {
+	var b batches
+	reportln(b.stdout(), "sent SIGKILL: 101 a")
+	reportln(b.stderr(), "skipped: process changed or exited: 102 b")
+	reportln(b.stdout(), "sent SIGKILL: 103 c")
+	var both bytes.Buffer
+	pickFailed(&b, errors.New("picker failed"), &both, &both)
+	want := "sent SIGKILL: 101 a\nskipped: process changed or exited: 102 b\nsent SIGKILL: 103 c\nkil: picker failed\n"
+	if both.String() != want {
+		t.Errorf("output = %q, want %q", both.String(), want)
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("no space left on device") }
+
+// `kil --help > /dev/full` must not report success when the usage was not
+// written, as GNU tools do.
+func TestHelpWriteErrorFails(t *testing.T) {
+	var stderr bytes.Buffer
+	code := run([]string{"--help"}, func(string) string { return "" }, failingWriter{}, &stderr)
+	if code != exitError || !strings.Contains(stderr.String(), "no space left on device") {
+		t.Errorf("kil --help to a full disk = %d, stderr %q; want %d and the error", code, stderr.String(), exitError)
 	}
 }

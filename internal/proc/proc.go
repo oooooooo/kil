@@ -4,7 +4,9 @@ package proc
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -97,11 +99,25 @@ func descendsFrom(pid, ancestor int, parent map[int]int) bool {
 	return false
 }
 
+// psSyntax lists the variables procps reads its option syntax from. With
+// BSD syntax, such as PS_PERSONALITY=bsd, it rejects kil's options.
+var psSyntax = []string{"PS_PERSONALITY", "CMD_ENV", "I_WANT_A_BROKEN_PS"}
+
+// ps returns a ps command printing psColumns of the selected processes.
+func ps(selection ...string) *exec.Cmd {
+	cmd := exec.Command("ps", append(append([]string{psWide}, selection...), "-o", psColumns)...)
+	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
+		name, _, _ := strings.Cut(kv, "=")
+		return slices.Contains(psSyntax, name)
+	})
+	return cmd
+}
+
 // List returns every process except self and its descendants. Pass 0 to
 // hide nothing. A ps failure is an error rather than a short list, because
 // a partial list could mislead the user about what is running.
 func List(self int) ([]Process, error) {
-	out, err := exec.Command("ps", psWide, "-A", "-o", psColumns).Output()
+	out, err := ps("-A").Output()
 	if err != nil {
 		return nil, fmt.Errorf("ps failed: %w", err)
 	}
@@ -117,7 +133,7 @@ func List(self int) ([]Process, error) {
 
 // Current returns the ps line of pid now, or false if pid does not exist.
 func Current(pid int) (string, bool) {
-	out, err := exec.Command("ps", psWide, "-p", strconv.Itoa(pid), "-o", psColumns).Output()
+	out, err := ps("-p", strconv.Itoa(pid)).Output()
 	if err != nil {
 		return "", false
 	}

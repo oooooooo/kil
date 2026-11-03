@@ -107,7 +107,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return exitError
 	}
 	if opts.help {
-		report(stdout, usage)
+		// Unlike the reports of signals sent, the usage is the whole
+		// output, so failing to write it is an error, as in GNU tools.
+		if _, err := fmt.Fprint(stdout, usage); err != nil {
+			reportf(stderr, "kil: write error: %v\n", err)
+			return exitError
+		}
 		return exitOK
 	}
 	envExact, err := exactFromEnv(getenv("KIL_EXACT"))
@@ -140,7 +145,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 
 	sent := &batches{}
 	send := func(batch []picker.Item) {
-		sent.code = max(sent.code, signalAll(batch, sig, &sent.out, &sent.err))
+		sent.code = max(sent.code, signalAll(batch, sig, sent.stdout(), sent.stderr()))
 		sent.sent += len(batch)
 	}
 	model, err := pick(ui.New(items, opts.query, signal.Label(sig), list).WithExact(opts.exact || envExact).WithSender(send))
@@ -153,8 +158,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 // pickFailed reports a picker failure after the reports of the rows already
 // signalled, which would otherwise be lost.
 func pickFailed(sent *batches, err error, stdout, stderr io.Writer) int {
-	_, _ = sent.out.WriteTo(stdout)
-	_, _ = sent.err.WriteTo(stderr)
+	sent.flush(stdout, stderr)
 	reportf(stderr, "kil: %v\n", err)
 	return exitError
 }
@@ -162,11 +166,45 @@ func pickFailed(sent *batches, err error, stdout, stderr io.Writer) int {
 // batches holds the reports of rows signalled before the picker ended,
 // which cannot be printed while the picker owns the screen.
 type batches struct {
-	out, err bytes.Buffer
-	code     int
+	// reports keeps stdout and stderr reports in one sequence, so that they
+	// come out in the order the processes were handled when both go to the
+	// same file.
+	reports []heldReport
+	code    int
 	// sent counts the rows handed to signalAll, to tell whether anything
 	// may have been signalled.
 	sent int
+}
+
+type heldReport struct {
+	toStderr bool
+	text     []byte
+}
+
+// heldWriter adds what is written to it to b's reports.
+type heldWriter struct {
+	b        *batches
+	toStderr bool
+}
+
+func (w heldWriter) Write(p []byte) (int, error) {
+	w.b.reports = append(w.b.reports, heldReport{w.toStderr, bytes.Clone(p)})
+	return len(p), nil
+}
+
+func (b *batches) stdout() io.Writer { return heldWriter{b, false} }
+func (b *batches) stderr() io.Writer { return heldWriter{b, true} }
+
+// flush prints the held reports in order.
+func (b *batches) flush(stdout, stderr io.Writer) {
+	for _, r := range b.reports {
+		w := stdout
+		if r.toStderr {
+			w = stderr
+		}
+		_, _ = w.Write(r.text)
+	}
+	b.reports = nil
 }
 
 // signalled says what a failure leaves signalled: after a partial Enter,
@@ -180,8 +218,7 @@ func (b *batches) signalled() string {
 
 // finish reports how the picker ended and signals what it accepted.
 func finish(model ui.Model, sig syscall.Signal, sent *batches, stdout, stderr io.Writer) int {
-	_, _ = sent.out.WriteTo(stdout)
-	_, _ = sent.err.WriteTo(stderr)
+	sent.flush(stdout, stderr)
 	switch model.Outcome() {
 	case ui.Aborted:
 		// The user chose to leave, so there is nothing more to report.
@@ -258,5 +295,3 @@ func signalAll(targets []picker.Item, sig syscall.Signal, stdout, stderr io.Writ
 func reportf(w io.Writer, format string, args ...any) { _, _ = fmt.Fprintf(w, format, args...) }
 
 func reportln(w io.Writer, s string) { _, _ = fmt.Fprintln(w, s) }
-
-func report(w io.Writer, s string) { _, _ = fmt.Fprint(w, s) }

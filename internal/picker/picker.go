@@ -150,26 +150,32 @@ func (p *Picker) Toggle(step int) {
 	p.focus(next)
 }
 
-// ToggleAllShown deselects every row shown if all of them are selected, and
-// otherwise selects the rest of them, in the order shown so that the rows
-// do not move.
-func (p *Picker) ToggleAllShown() {
+// ToggleRange deselects the rows from index from up to to if all of them are
+// selected, and otherwise selects the rest of them, in the order shown so
+// that the rows do not move. The UI passes the rows drawn on screen, so that
+// Enter never signals a process the user cannot see. It returns the IDs it
+// selected, so that the UI can keep them on screen.
+func (p *Picker) ToggleRange(from, to int) []string {
+	rows := p.rows[max(from, 0):min(max(to, from, 0), len(p.rows))]
 	allSelected := true
-	for _, r := range p.rows {
+	for _, r := range rows {
 		if !r.Selected {
 			allSelected = false
 			break
 		}
 	}
-	for _, r := range p.rows {
+	var added []string
+	for _, r := range rows {
 		switch {
 		case allSelected:
 			delete(p.selected, r.Item.ID)
 		case !r.Selected:
 			p.selectItem(r.Item.ID)
+			added = append(added, r.Item.ID)
 		}
 	}
 	p.refreshKeepingFocus()
+	return added
 }
 
 func (p *Picker) selectItem(id string) {
@@ -200,6 +206,22 @@ func (p *Picker) Reload(items []Item) {
 	p.items = slices.Clone(items)
 	p.gone = gone
 	p.refreshKeepingFocus()
+}
+
+// Forget removes items, which Enter has signalled, from the list and the
+// selection, and moves the cursor to the first row, where the selections
+// left are pinned.
+func (p *Picker) Forget(items []Item) {
+	gone := map[string]bool{}
+	for _, it := range items {
+		gone[it.ID] = true
+		delete(p.selected, it.ID)
+	}
+	keep := func(it Item) bool { return gone[it.ID] }
+	p.items = slices.DeleteFunc(p.items, keep)
+	p.gone = slices.DeleteFunc(p.gone, keep)
+	p.refresh()
+	p.cursor = 0
 }
 
 // Targets returns the items Enter acts on: the selected items, or the focused

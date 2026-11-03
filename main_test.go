@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -10,6 +12,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/oooooooo/kil/internal/picker"
+	"github.com/oooooooo/kil/internal/proc"
 	"github.com/oooooooo/kil/internal/ui"
 )
 
@@ -141,9 +145,156 @@ func TestAbortEndsWithoutAMessage(t *testing.T) {
 	for _, k := range []tea.KeyType{tea.KeyEsc, tea.KeyCtrlC} {
 		next, _ := ui.New(nil, "", "SIGKILL", nil).Update(tea.KeyMsg{Type: k})
 		var stdout, stderr bytes.Buffer
-		code := finish(next.(ui.Model), syscall.SIGKILL, &stdout, &stderr)
+		code := finish(next.(ui.Model), syscall.SIGKILL, &batches{}, &stdout, &stderr)
 		if code != exitAborted || stdout.Len() != 0 || stderr.Len() != 0 {
 			t.Errorf("%v: finish = %d, stdout %q, stderr %q; want %d and no output", k, code, stdout.String(), stderr.String(), exitAborted)
 		}
+	}
+}
+
+// Killing a parent reparents its children, which changes their PPID. That is
+// still the same process, so a child selected after its parent must be
+// signalled, not skipped as changed.
+func TestChildSelectedAfterItsParentIsSignalled(t *testing.T) {
+	parent := exec.Command("sh", "-c", "sleep 1000 & echo $!; wait")
+	out, err := parent.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var child int
+	if _, err := fmt.Fscan(out, &child); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = syscall.Kill(child, syscall.SIGKILL)
+		_ = parent.Process.Kill()
+		_ = parent.Wait()
+	})
+
+	procs, err := proc.List(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var targets []picker.Item
+	for _, pid := range []int{parent.Process.Pid, child} {
+		for _, p := range procs {
+			if p.PID == pid {
+				targets = append(targets, picker.Item{ID: p.Identity, Text: p.Raw})
+			}
+		}
+	}
+	if len(targets) != 2 {
+		t.Fatalf("parent and child not both listed: %v", targets)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := signalAll(targets, syscall.SIGKILL, &stdout, &stderr); code != exitOK {
+		t.Errorf("signalAll = %d, want %d\nstdout:\n%s\nstderr:\n%s", code, exitOK, stdout.String(), stderr.String())
+	}
+}
+
+// Reports of the rows a partial Enter signalled are held while the picker
+// owns the screen, then printed when kil ends, with the selections left
+// unsignalled reported as skipped. The sender here only records, so no
+// process is signalled.
+func TestStoppedReportsEarlierBatchesAndTheSelectionsLeft(t *testing.T) {
+	var b batches
+	var its []picker.Item
+	for i := range 30 {
+		line := fmt.Sprintf("%03d proc", 100+i)
+		its = append(its, picker.Item{ID: line, Text: line})
+	}
+	press := func(m ui.Model, msgs ...tea.Msg) ui.Model {
+		for _, msg := range msgs {
+			next, _ := m.Update(msg)
+			m = next.(ui.Model)
+		}
+		return m
+	}
+	m := ui.New(its, "", "SIGKILL", nil).WithSender(func(batch []picker.Item) {
+		for _, it := range batch {
+			reportf(&b.out, "sent SIGKILL: %s\n", it.Text)
+		}
+	})
+	m = press(m,
+		tea.WindowSizeMsg{Width: 80, Height: 24},
+		m.Init()(), // the first frame is drawn
+		tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}, Alt: true},
+		tea.WindowSizeMsg{Width: 80, Height: 10},
+		tea.KeyMsg{Type: tea.KeyEnter},
+		tea.KeyMsg{Type: tea.KeyEsc},
+		tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}},
+	)
+	if m.Outcome() != ui.Stopped {
+		t.Fatalf("Outcome() = %v, want Stopped", m.Outcome())
+	}
+	var stdout, stderr bytes.Buffer
+	code := finish(m, syscall.SIGKILL, &b, &stdout, &stderr)
+	if code != exitProblems {
+		t.Errorf("finish = %d, want %d", code, exitProblems)
+	}
+	if !strings.Contains(stdout.String(), "sent SIGKILL: ") {
+		t.Errorf("stdout = %q, want the earlier batch's reports", stdout.String())
+	}
+	if got, want := strings.Count(stderr.String(), "skipped: not signalled: "), len(m.Left()); got != want || want == 0 {
+		t.Errorf("stderr reports %d selections left, want %d:\n%s", got, want, stderr.String())
+	}
+}
+
+// A picker failure after a partial Enter must still print what was signalled.
+func TestPickerFailureKeepsEarlierReports(t *testing.T) {
+	var b batches
+	reportln(&b.out, "sent SIGKILL: 101 a")
+	var stdout, stderr bytes.Buffer
+	code := pickFailed(&b, errors.New("read /dev/tty: input/output error"), &stdout, &stderr)
+	if code != exitError || !strings.Contains(stdout.String(), "sent SIGKILL: 101 a") || !strings.Contains(stderr.String(), "input/output error") {
+		t.Errorf("pickFailed = %d, stdout %q, stderr %q; want %d with the earlier report and the error", code, stdout.String(), stderr.String(), exitError)
+	}
+}
+
+// After a partial Enter some processes were signalled, so the failure must
+// not claim that nothing was.
+func TestFailureAfterAPartialEnterDoesNotClaimNothingWasSignalled(t *testing.T) {
+	reload := func() ([]picker.Item, error) { return nil, errors.New("ps failed") }
+	var its []picker.Item
+	for i := range 30 {
+		line := fmt.Sprintf("%03d proc", 100+i)
+		its = append(its, picker.Item{ID: line, Text: line})
+	}
+	var b batches
+	m := ui.New(its, "", "SIGKILL", reload).WithSender(func(batch []picker.Item) {
+		for _, it := range batch {
+			reportf(&b.out, "sent SIGKILL: %s\n", it.Text)
+		}
+		b.sent += len(batch)
+	})
+	var cmd tea.Cmd
+	for _, msg := range []tea.Msg{
+		tea.WindowSizeMsg{Width: 80, Height: 24},
+		m.Init()(), // the first frame is drawn
+		tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}, Alt: true},
+		tea.WindowSizeMsg{Width: 80, Height: 10},
+		tea.KeyMsg{Type: tea.KeyEnter},
+		tea.KeyMsg{Type: tea.KeyCtrlR},
+	} {
+		var next tea.Model
+		next, cmd = m.Update(msg)
+		m = next.(ui.Model)
+	}
+	next, _ := m.Update(cmd())
+	m = next.(ui.Model)
+	if m.Outcome() != ui.ListFailed {
+		t.Fatalf("Outcome() = %v, want ListFailed", m.Outcome())
+	}
+	var stdout, stderr bytes.Buffer
+	finish(m, syscall.SIGKILL, &b, &stdout, &stderr)
+	if strings.Contains(stderr.String(), "nothing was signalled") || !strings.Contains(stderr.String(), "ps failed") {
+		t.Errorf("stderr = %q, want the error without \"nothing was signalled\"", stderr.String())
+	}
+	if got, want := strings.Count(stderr.String(), "skipped: not signalled: "), 14; got != want {
+		t.Errorf("stderr reports %d selections left, want %d:\n%s", got, want, stderr.String())
 	}
 }

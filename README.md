@@ -62,11 +62,11 @@ instead. The info line shows `[exact]` in this mode.
 | type | Filter the process list in real time |
 | `Up` / `Down` | Move the cursor (also `Ctrl-P` / `Ctrl-N`). As in fzf, the best match is at the bottom |
 | `Tab` / `Shift-Tab` | Select or deselect the process under the cursor and move down / up. Selected processes are pinned next to the prompt, so you can select under one query, change the query, and select more |
-| `Alt-A` | Select every process currently shown, or deselect them all if they are all selected already |
+| `Alt-A` | Select every process drawn on screen, or deselect them all if they are all selected already. Matches scrolled off screen are not selected |
 | `Ctrl-X` | Switch between fuzzy and exact matching |
 | `Ctrl-R` | Refresh the process list, keeping your query and selections |
-| `Enter` | Kill the selected processes, or the one under the cursor if none are selected |
-| `Ctrl-C` / `Esc` | Abort without killing anything |
+| `Enter` | Kill the selected processes, or the one under the cursor if none are selected. Only processes on screen are killed: if some selected ones are off screen, `kil` stays open with them brought on screen, and `Enter` again kills them |
+| `Ctrl-C` / `Esc` | Abort. After `Enter` killed only part of the selection, `Esc` asks before leaving the rest (`Y` / `Enter` to leave, `n` to stay) |
 | `Alt-H` | Show every key in place of the list. Any key other than `Ctrl-C`, including `Esc`, only closes it |
 
 The query is edited with readline's keys: `Ctrl-A` / `Ctrl-E` (or `Home` /
@@ -83,7 +83,7 @@ Each result is reported as `sent SIGKILL:` (or whichever signal you chose),
 | Status | Meaning |
 | --- | --- |
 | `0` | Every selected process was signalled |
-| `1` | Nothing was selected, or some processes were skipped or failed |
+| `1` | Nothing was selected, some processes were skipped or failed, or selected processes were left unsignalled |
 | `2` | Usage error, invalid `KIL_SIGNAL` or `KIL_EXACT`, listing processes failed, or no terminal |
 | `130` | Aborted with `Ctrl-C` / `Esc` |
 
@@ -110,7 +110,9 @@ Each result is reported as `sent SIGKILL:` (or whichever signal you chose),
   process that exited or changed stays selected and is reported as
   `skipped:`, so `Enter` never falls back to the line under the cursor.
 - Before sending a signal, `kil` re-checks that each selected PID still shows
-  the same line in `ps`, and reports it as `skipped:` otherwise. It cannot
+  the same line in `ps`, apart from the PPID, and reports it as `skipped:`
+  otherwise. The PPID is ignored because killing a parent reparents its
+  children, so a parent and child selected together are both signalled. It cannot
   tell apart a restarted process with the identical command line. On Linux,
   the signal goes through a pidfd opened before the check, so it cannot reach
   a different process that reused the PID; on macOS the PID can still change

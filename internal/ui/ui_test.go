@@ -49,8 +49,13 @@ func key(t tea.KeyType) tea.KeyMsg {
 }
 
 func sized(m Model) Model {
-	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
-	return next.(Model)
+	return drawn(m, 80, 20)
+}
+
+// drawn returns m on a terminal of the given size, after Bubble Tea has drawn
+// it, so that Enter does not wait for rows to reach the terminal.
+func drawn(m Model, width, height int) Model {
+	return settled(resized(m, width, height))
 }
 
 func targetTexts(m Model) []string {
@@ -177,7 +182,7 @@ func TestFailedReloadEndsWithoutTargets(t *testing.T) {
 // the header names only the selection keys and the key for the full help.
 // Enter is in it, with the signal it sends, because KIL_SIGNAL can change it.
 func TestHeaderShowsTheMainKeysOnly(t *testing.T) {
-	m := resized(New(items("101 node a"), "", "SIGTERM", noReload), 60, 20)
+	m := drawn(New(items("101 node a"), "", "SIGTERM", noReload), 60, 20)
 	lines := viewLines(m)
 	if got, want := lines[len(lines)-3], "  Tab select, Alt-A all, Enter SIGTERM, Alt-H help"; got != want {
 		t.Errorf("header line = %q, want %q", got, want)
@@ -202,9 +207,9 @@ func TestAltHShowsHelpNamingTheSignal(t *testing.T) {
 // one; any key only closes the help.
 func TestKeyWhileHelpIsShownOnlyClosesIt(t *testing.T) {
 	m := sized(New(items("101 node a"), "", "SIGKILL", noReload))
-	m, cmd := press(m, alt('h'), key(tea.KeyEnter))
-	if m.Outcome() != Running || cmd != nil {
-		t.Errorf("Enter with the help shown: Outcome() = %v, want Running and no command", m.Outcome())
+	m, _ = press(m, alt('h'), key(tea.KeyEnter))
+	if m.Outcome() != Running {
+		t.Errorf("Enter with the help shown: Outcome() = %v, want Running", m.Outcome())
 	}
 	if !strings.Contains(plain(m.View()), "101 node a") {
 		t.Errorf("Enter did not close the help:\n%s", plain(m.View()))
@@ -215,9 +220,9 @@ func TestKeyWhileHelpIsShownOnlyClosesIt(t *testing.T) {
 // programs; Ctrl-C still aborts.
 func TestEscWhileHelpIsShownClosesIt(t *testing.T) {
 	m := sized(New(items("101 node a"), "", "SIGKILL", noReload))
-	m, cmd := press(m, alt('h'), key(tea.KeyEsc))
-	if m.Outcome() != Running || cmd != nil {
-		t.Errorf("Esc with the help shown: Outcome() = %v, want Running and no command", m.Outcome())
+	m, _ = press(m, alt('h'), key(tea.KeyEsc))
+	if m.Outcome() != Running {
+		t.Errorf("Esc with the help shown: Outcome() = %v, want Running", m.Outcome())
 	}
 	if !strings.Contains(plain(m.View()), "101 node a") {
 		t.Errorf("Esc did not close the help:\n%s", plain(m.View()))
@@ -577,7 +582,7 @@ func numberedLines(n int) []string {
 // growing the terminal must bring them back once everything fits.
 func TestGrowingTheTerminalShowsEveryRowThatFits(t *testing.T) {
 	lines := numberedLines(30)
-	m := resized(New(items(lines...), "", "SIGKILL", noReload), 80, 8)
+	m := drawn(New(items(lines...), "", "SIGKILL", noReload), 80, 8)
 	for range 25 {
 		m, _ = press(m, key(tea.KeyUp))
 	}
@@ -594,7 +599,7 @@ func TestGrowingTheTerminalShowsEveryRowThatFits(t *testing.T) {
 // terminal the view must fit, keeping the cursor row and the prompt.
 func TestTinyTerminalKeepsTheCursorRowVisible(t *testing.T) {
 	for _, height := range []int{2, 3} {
-		m := resized(New(items("101 node a"), "", "SIGKILL", noReload), 80, height)
+		m := drawn(New(items("101 node a"), "", "SIGKILL", noReload), 80, height)
 		lines := viewLines(m)
 		if len(lines) > height {
 			t.Errorf("height %d: view has %d lines:\n%s", height, len(lines), plain(m.View()))
@@ -608,7 +613,7 @@ func TestTinyTerminalKeepsTheCursorRowVisible(t *testing.T) {
 // With room for the prompt only, no row is visible, so Enter must not
 // signal one.
 func TestEnterDoesNothingWithoutRoomForRows(t *testing.T) {
-	m := resized(New(items("101 node a"), "", "SIGKILL", noReload), 80, 1)
+	m := drawn(New(items("101 node a"), "", "SIGKILL", noReload), 80, 1)
 	m, cmd := press(m, key(tea.KeyEnter))
 	if m.Outcome() != Running || cmd != nil {
 		t.Errorf("Enter on a one-line terminal: Outcome() = %v, want Running and no command", m.Outcome())
@@ -644,7 +649,7 @@ func promptLine(m Model) string {
 // A query wider than the terminal scrolls so that the caret stays visible.
 func TestLongQueryKeepsTheCaretVisible(t *testing.T) {
 	query := strings.Repeat("a", 60) + "END"
-	m := resized(New(items("101 node a"), query, "SIGKILL", noReload), 20, 8)
+	m := drawn(New(items("101 node a"), query, "SIGKILL", noReload), 20, 8)
 	prompt := promptLine(m)
 	if w := ansi.StringWidth(prompt); w > 20 {
 		t.Errorf("prompt is %d columns wide, want at most 20: %q", w, plain(prompt))
@@ -663,7 +668,7 @@ func TestLongQueryKeepsTheCaretVisible(t *testing.T) {
 // prompt rather than index the scrollbar outside its lines.
 func TestOneLineTerminalDrawsOnlyThePrompt(t *testing.T) {
 	for _, n := range []int{1, 5} {
-		m := resized(New(items(numberedLines(n)...), "", "SIGKILL", noReload), 80, 1)
+		m := drawn(New(items(numberedLines(n)...), "", "SIGKILL", noReload), 80, 1)
 		for range n {
 			m, _ = press(m, key(tea.KeyUp))
 		}
@@ -691,7 +696,7 @@ func TestInfoLineCountsKeptSelectionsInTheTotal(t *testing.T) {
 // cut inside it.
 func TestQueryThatFitsIsNotCutInsideAnEmoji(t *testing.T) {
 	query := "a👨‍👩‍👧‍👦END"
-	m := resized(New(nil, query, "SIGKILL", noReload), 8, 8)
+	m := drawn(New(nil, query, "SIGKILL", noReload), 8, 8)
 	m, _ = press(m, key(tea.KeyCtrlA))
 	if got := plain(promptLine(m)); got != "> "+query {
 		t.Errorf("prompt = %q, want %q", got, "> "+query)
@@ -701,7 +706,7 @@ func TestQueryThatFitsIsNotCutInsideAnEmoji(t *testing.T) {
 // The help lists every key, so the header's short key list is not repeated
 // below it; the help takes the header's line instead.
 func TestHelpReplacesTheHeader(t *testing.T) {
-	m := resized(New(items("101 node a"), "", "SIGKILL", noReload), 80, 22)
+	m := drawn(New(items("101 node a"), "", "SIGKILL", noReload), 80, 22)
 	m, _ = press(m, alt('h'))
 	lines := viewLines(m)
 	if strings.Contains(plain(m.View()), "Alt-H help") {
@@ -715,7 +720,7 @@ func TestHelpReplacesTheHeader(t *testing.T) {
 // The query syntax is fzf's, which a user who does not use fzf cannot
 // guess, so the help explains it below the keys.
 func TestHelpExplainsTheQuerySyntax(t *testing.T) {
-	m := resized(New(items("101 node a"), "", "SIGKILL", noReload), 80, 22)
+	m := drawn(New(items("101 node a"), "", "SIGKILL", noReload), 80, 22)
 	m, _ = press(m, alt('h'))
 	view := plain(m.View())
 	for _, want := range []string{"Tab", "close this help", "'node", "'node'", "^node", ".js$", "!node", "a | b", "a b", "case sensitive"} {
@@ -728,12 +733,424 @@ func TestHelpExplainsTheQuerySyntax(t *testing.T) {
 // The keys and the query syntax are both two columns of text, so headings
 // and a blank line tell them apart.
 func TestHelpSeparatesKeysFromTheQuerySyntax(t *testing.T) {
-	m := resized(New(items("101 node a"), "", "SIGKILL", noReload), 80, 22)
+	m := drawn(New(items("101 node a"), "", "SIGKILL", noReload), 80, 22)
 	m, _ = press(m, alt('h'))
 	lines := viewLines(m)
 	keys := slices.Index(lines, "  Keys")
 	query := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(l, "  Query") })
 	if keys < 0 || query < 1 || keys > query || lines[query-1] != "" {
 		t.Errorf("help has no \"Keys\" heading, or no blank line before the \"Query\" heading:\n%s", strings.Join(lines, "\n"))
+	}
+}
+
+// Enter must only signal processes the user can see, so Alt-A selects the
+// rows drawn on screen, not every match.
+func TestAltASelectsOnlyTheRowsOnScreen(t *testing.T) {
+	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload), 80, 24)
+	m, _ = press(m, alt('a'), key(tea.KeyEnter))
+	view := plain(m.View())
+	for _, target := range targetTexts(m) {
+		if !strings.Contains(view, target) {
+			t.Errorf("target %q is not on screen:\n%s", target, view)
+		}
+	}
+	if got := len(m.Targets()); got != 21 {
+		t.Errorf("len(Targets()) = %d, want the 21 rows on screen", got)
+	}
+}
+
+// recorder stands in for main's sender and records what Enter signalled.
+type recorder struct{ sent [][]string }
+
+func (r *recorder) send(its []picker.Item) {
+	var texts []string
+	for _, it := range its {
+		texts = append(texts, it.Text)
+	}
+	r.sent = append(r.sent, texts)
+}
+
+// offscreenSelections returns a model with 21 rows selected by Alt-A on a
+// 24-line terminal, then shrunk to 10 lines so that most of them are off
+// screen.
+func offscreenSelections(r *recorder) Model {
+	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload).WithSender(r.send), 80, 24)
+	m, _ = press(m, alt('a'))
+	return resized(m, 80, 10)
+}
+
+// Alt-A pins the rows it selects, which reorders the list, so the window
+// must follow them: every row Alt-A selected stays on screen, and Alt-A
+// again deselects exactly them.
+func TestAltAKeepsTheRowsItSelectedOnScreen(t *testing.T) {
+	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload), 80, 24)
+	for range 29 {
+		m, _ = press(m, key(tea.KeyUp))
+	}
+	m, _ = press(m, alt('a'))
+	view := plain(m.View())
+	for _, r := range m.picker.Rows() {
+		if r.Selected && !strings.Contains(view, r.Item.Text) {
+			t.Errorf("selected row %q is off screen after Alt-A:\n%s", r.Item.Text, view)
+		}
+	}
+	m, _ = press(m, alt('a'))
+	if n := m.picker.SelectedCount(); n != 0 {
+		t.Errorf("SelectedCount() = %d after Alt-A twice, want 0", n)
+	}
+}
+
+// Enter signals only the selected rows on screen and keeps kil open with
+// the rest of the selection brought on screen, so the user sees what is
+// left before signalling it.
+func TestEnterSignalsOnlyTheSelectedRowsOnScreen(t *testing.T) {
+	var r recorder
+	m := offscreenSelections(&r)
+	before := plain(m.View())
+	m, _ = press(m, key(tea.KeyEnter))
+	if m.Outcome() != Running {
+		t.Fatalf("Enter with selections off screen: Outcome() = %v, want Running", m.Outcome())
+	}
+	if len(r.sent) != 1 || len(r.sent[0]) == 0 {
+		t.Fatalf("sent = %v, want one batch", r.sent)
+	}
+	after := plain(m.View())
+	for _, s := range r.sent[0] {
+		if !strings.Contains(before, s) {
+			t.Errorf("signalled %q, which was off screen:\n%s", s, before)
+		}
+		if strings.Contains(after, s) {
+			t.Errorf("signalled %q is still listed:\n%s", s, after)
+		}
+	}
+	if left := 21 - len(r.sent[0]); !strings.Contains(after, fmt.Sprintf("%d selected left", left)) {
+		t.Errorf("info line does not say %d selected left:\n%s", left, after)
+	}
+}
+
+// Pressing Enter until kil ends signals every selection once, each while it
+// was on screen.
+func TestEnterRepeatedSignalsEverySelectionOnce(t *testing.T) {
+	var r recorder
+	m := offscreenSelections(&r)
+	var all []string
+	for range 10 {
+		m = settled(m)
+		view := plain(m.View())
+		m, _ = press(m, key(tea.KeyEnter))
+		var batch []string
+		if m.Outcome() == Accepted {
+			batch = targetTexts(m)
+		} else {
+			batch = r.sent[len(r.sent)-1]
+		}
+		for _, s := range batch {
+			if !strings.Contains(view, s) {
+				t.Errorf("signalled %q, which was off screen:\n%s", s, view)
+			}
+		}
+		all = append(all, batch...)
+		if m.Outcome() != Running {
+			break
+		}
+	}
+	slices.Sort(all)
+	if len(all) != 21 || len(slices.Compact(all)) != 21 {
+		t.Errorf("signalled %d rows (%v), want the 21 selected once each", len(all), all)
+	}
+}
+
+func partlySent(t *testing.T) Model {
+	t.Helper()
+	var r recorder
+	m, _ := press(offscreenSelections(&r), key(tea.KeyEnter))
+	if m.Outcome() != Running {
+		t.Fatalf("Outcome() = %v after a partial Enter, want Running", m.Outcome())
+	}
+	return m
+}
+
+// After a partial Enter, leaving with Esc would leave chosen processes
+// running, so kil asks first.
+func TestEscAfterAPartialEnterAsks(t *testing.T) {
+	m, cmd := press(partlySent(t), key(tea.KeyEsc))
+	if m.Outcome() != Running || cmd != nil || !strings.Contains(plain(m.View()), "[Y/n]") {
+		t.Fatalf("Esc after a partial Enter: Outcome() = %v, want Running and a [Y/n] question:\n%s", m.Outcome(), plain(m.View()))
+	}
+	for _, k := range []tea.KeyMsg{typed("y"), typed("Y"), key(tea.KeyEnter)} {
+		m, _ := press(partlySent(t), key(tea.KeyEsc), k)
+		if m.Outcome() != Stopped || len(m.Left()) == 0 {
+			t.Errorf("%v: Outcome() = %v, Left() = %v; want Stopped with the selections left", k, m.Outcome(), m.Left())
+		}
+	}
+}
+
+func TestNoKeepsKilOpenWithTheSelections(t *testing.T) {
+	m := partlySent(t)
+	selected := m.picker.SelectedCount()
+	m, cmd := press(m, key(tea.KeyEsc), typed("n"))
+	if m.Outcome() != Running || cmd != nil || m.picker.SelectedCount() != selected {
+		t.Errorf("n: Outcome() = %v, SelectedCount() = %d; want Running with %d selected", m.Outcome(), m.picker.SelectedCount(), selected)
+	}
+	if strings.Contains(plain(m.View()), "[Y/n]") {
+		t.Errorf("question still shown after n:\n%s", plain(m.View()))
+	}
+}
+
+func TestCtrlCAfterAPartialEnterAbortsWithoutAsking(t *testing.T) {
+	m, _ := press(partlySent(t), key(tea.KeyCtrlC))
+	if m.Outcome() != Aborted {
+		t.Errorf("Ctrl-C after a partial Enter: Outcome() = %v, want Aborted", m.Outcome())
+	}
+}
+
+// Bubble Tea draws asynchronously, so an Enter typed right after a partial
+// Enter can arrive before the rows it would signal are on the terminal.
+// Enter waits until the list has settled.
+func TestEnterRightAfterAPartialEnterWaits(t *testing.T) {
+	var r recorder
+	m, _ := press(offscreenSelections(&r), key(tea.KeyEnter), key(tea.KeyEnter))
+	if len(r.sent) != 1 || m.Outcome() != Running {
+		t.Fatalf("second Enter before the list settled: sent %d batches, Outcome() = %v; want 1 and Running", len(r.sent), m.Outcome())
+	}
+	m, _ = press(settled(m), key(tea.KeyEnter))
+	if len(r.sent) != 2 && m.Outcome() != Accepted {
+		t.Errorf("Enter after the list settled did nothing: sent %d batches, Outcome() = %v", len(r.sent), m.Outcome())
+	}
+}
+
+// When every selection is off screen, Enter signals nothing but must bring
+// them on screen, or pressing Enter again would never make progress.
+func TestEnterBringsSelectionsOnScreenWhenNoneAreShown(t *testing.T) {
+	var r recorder
+	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload).WithSender(r.send), 80, 10)
+	m, _ = press(m, key(tea.KeyTab))
+	for range 30 {
+		m, _ = press(m, key(tea.KeyUp))
+	}
+	m, _ = press(m, key(tea.KeyEnter))
+	if !strings.Contains(plain(m.View()), "▌┃100 proc") && !strings.Contains(plain(m.View()), "┃100 proc") {
+		t.Fatalf("selected row not brought on screen:\n%s", plain(m.View()))
+	}
+	m, _ = press(settled(m), key(tea.KeyEnter))
+	if m.Outcome() != Accepted || !slices.Equal(targetTexts(m), []string{"100 proc"}) {
+		t.Errorf("Enter with the selection on screen: Outcome() = %v, Targets() = %v", m.Outcome(), targetTexts(m))
+	}
+}
+
+// With more selections than fit, Alt-A must still show the rows it just
+// selected, so that the user sees them and Alt-A again deselects them.
+func TestAltAShowsTheRowsItJustSelected(t *testing.T) {
+	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload), 80, 13)
+	m, _ = press(m, alt('a'))
+	m = resized(m, 80, 8)
+	for range 10 {
+		m, _ = press(m, key(tea.KeyUp))
+	}
+	m, _ = press(m, key(tea.KeyDown), key(tea.KeyDown), key(tea.KeyDown))
+	was := map[string]bool{}
+	for _, r := range m.picker.Rows() {
+		was[r.Item.Text] = r.Selected
+	}
+	m, _ = press(m, alt('a'))
+	view := plain(m.View())
+	var added []string
+	for _, r := range m.picker.Rows() {
+		if r.Selected && !was[r.Item.Text] {
+			added = append(added, r.Item.Text)
+			if !strings.Contains(view, "┃"+r.Item.Text) {
+				t.Errorf("row %q Alt-A just selected is off screen:\n%s", r.Item.Text, view)
+			}
+		}
+	}
+	if len(added) == 0 {
+		t.Fatalf("Alt-A selected nothing new:\n%s", view)
+	}
+	m, _ = press(m, alt('a'))
+	for _, r := range m.picker.Rows() {
+		if r.Selected && slices.Contains(added, r.Item.Text) {
+			t.Errorf("row %q is still selected after Alt-A again", r.Item.Text)
+		}
+	}
+}
+
+// settled delivers the end of the wait that Enter observes after the rows on
+// screen changed.
+func settled(m Model) Model {
+	next, _ := m.Update(settledMsg{gen: m.settleGen})
+	return next.(Model)
+}
+
+// Bubble Tea keeps delivering keys until it has quit, so a key typed after
+// the outcome is decided must not change it or signal anything.
+func TestKeysAfterTheOutcomeIsDecidedAreIgnored(t *testing.T) {
+	var r recorder
+	m, _ := press(offscreenSelections(&r), key(tea.KeyCtrlC), key(tea.KeyEnter))
+	if m.Outcome() != Aborted || len(r.sent) != 0 {
+		t.Errorf("Ctrl-C then Enter: Outcome() = %v, sent %v; want Aborted and nothing sent", m.Outcome(), r.sent)
+	}
+
+	r = recorder{}
+	m = drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload).WithSender(r.send), 80, 24)
+	m, _ = press(m, key(tea.KeyTab), key(tea.KeyEnter))
+	targets := targetTexts(m)
+	m, _ = press(m, key(tea.KeyUp), key(tea.KeyTab), key(tea.KeyEnter))
+	if m.Outcome() != Accepted || !slices.Equal(targetTexts(m), targets) || len(r.sent) != 0 {
+		t.Errorf("keys after Enter: Outcome() = %v, Targets() = %v, sent %v; want Accepted with %v and nothing sent", m.Outcome(), targetTexts(m), r.sent, targets)
+	}
+}
+
+// Bubble Tea draws asynchronously, so selected rows that have just come on
+// screen may not be on the terminal yet. Enter waits after any change that
+// brings selections on screen, not only after a partial Enter.
+func TestEnterRightAfterSelectionsComeOnScreenWaits(t *testing.T) {
+	bring := map[string]func(Model) Model{
+		"closing the help": func(m Model) Model {
+			m, _ = press(m, alt('h'), key(tea.KeyEsc))
+			return m
+		},
+		"scrolling": func(m Model) Model {
+			for range 30 {
+				m, _ = press(m, key(tea.KeyDown))
+			}
+			return m
+		},
+		"growing the terminal": func(m Model) Model { return resized(m, 80, 24) },
+	}
+	for name, f := range bring {
+		var r recorder
+		m := settled(partlySent(t))
+		if name == "scrolling" {
+			for range 30 {
+				m, _ = press(m, key(tea.KeyUp))
+			}
+		}
+		m = settled(m)
+		before := len(r.sent)
+		m, _ = press(f(m).WithSender(r.send), key(tea.KeyEnter))
+		if len(r.sent) != before || m.Outcome() != Running {
+			t.Errorf("Enter right after %s: sent %v, Outcome() = %v; want nothing sent and Running", name, r.sent, m.Outcome())
+		}
+		m, _ = press(settled(m), key(tea.KeyEnter))
+		if len(r.sent) == before && m.Outcome() == Running {
+			t.Errorf("Enter after %s settled did nothing", name)
+		}
+	}
+}
+
+// Some terminals, such as serial consoles, report a size of 0x0. kil then
+// keeps its default size rather than drawing no row, so Enter still works.
+func TestZeroTerminalSizeKeepsTheDefaultSize(t *testing.T) {
+	m := drawn(New(items("101 node a"), "", "SIGKILL", noReload), 0, 0)
+	if !strings.Contains(plain(m.View()), "101 node a") {
+		t.Errorf("row not drawn with a 0x0 size:\n%s", plain(m.View()))
+	}
+	m, _ = press(m, key(tea.KeyEnter))
+	if m.Outcome() != Accepted {
+		t.Errorf("Enter with a 0x0 size: Outcome() = %v, want Accepted", m.Outcome())
+	}
+}
+
+// Enter answers the question, so its answers must stay on screen however
+// narrow the terminal is.
+func TestNarrowTerminalKeepsTheAnswersOfTheQuestion(t *testing.T) {
+	m, _ := press(partlySent(t), key(tea.KeyEsc))
+	for _, width := range []int{80, 30, 12, 6} {
+		m = resized(m, width, 10)
+		if prompt := plain(promptLine(m)); !strings.Contains(prompt, "[Y/n]") || ansi.StringWidth(prompt) > width {
+			t.Errorf("width %d: question %q has no [Y/n] or does not fit", width, prompt)
+		}
+	}
+}
+
+// Rows that have just come on screen may not be on the terminal yet, so
+// selecting them right away with Alt-A must not let Enter signal them either.
+func TestEnterRightAfterSelectingRowsJustOnScreenWaits(t *testing.T) {
+	var r recorder
+	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload).WithSender(r.send), 80, 5)
+	m, _ = press(m, alt('a'), key(tea.KeyUp), key(tea.KeyUp), key(tea.KeyUp))
+	m = settled(m)
+	m, _ = press(m, key(tea.KeyUp), alt('a'), key(tea.KeyEnter))
+	if len(r.sent) != 0 || m.Outcome() != Running {
+		t.Fatalf("Enter right after selecting rows just on screen: sent %v, Outcome() = %v; want nothing sent and Running", r.sent, m.Outcome())
+	}
+	m, _ = press(settled(m), key(tea.KeyEnter))
+	if len(r.sent) == 0 && m.Outcome() == Running {
+		t.Error("Enter after the rows settled did nothing")
+	}
+}
+
+// Bubble Tea draws with each dimension it is given, so kil keeps only the
+// dimension reported as 0, not both.
+func TestOneZeroDimensionStillApplies(t *testing.T) {
+	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload), 80, 24)
+	m, _ = press(m, alt('a'))
+	m, _ = press(resized(m, 0, 1), key(tea.KeyEnter))
+	if m.Outcome() != Running {
+		t.Errorf("Enter on a 1-line terminal reported as 0x1: Outcome() = %v, want Running", m.Outcome())
+	}
+	if lines := strings.Count(m.View(), "\n") + 1; lines != 1 {
+		t.Errorf("view has %d lines on a 1-line terminal, want 1", lines)
+	}
+}
+
+// Nothing is on the terminal until Bubble Tea draws the first frame, so the
+// rows kil starts with count as just come on screen.
+func TestEnterRightAfterStartWaits(t *testing.T) {
+	var r recorder
+	m := New(items(numberedLines(30)...), "", "SIGKILL", noReload).WithSender(r.send)
+	if m.Init() == nil {
+		t.Error("Init() starts no wait for the first frame")
+	}
+	m, _ = press(m, alt('a'))
+	m, _ = press(resized(m, 80, 5), key(tea.KeyEnter))
+	if len(r.sent) != 0 || m.Outcome() != Running {
+		t.Fatalf("Enter before the first frame: sent %v, Outcome() = %v; want nothing sent and Running", r.sent, m.Outcome())
+	}
+	m, _ = press(settled(m), key(tea.KeyEnter))
+	if len(r.sent) == 0 && m.Outcome() == Running {
+		t.Error("Enter after the first frame did nothing")
+	}
+}
+
+// Each row's wait ends 300 ms after it came on screen, so rows that keep
+// coming on screen do not keep Enter waiting for rows shown long before.
+func TestEachRowWaitsOnlyForItself(t *testing.T) {
+	var r recorder
+	next := 200
+	reload := func() ([]picker.Item, error) {
+		next++
+		return items("100 proc", fmt.Sprintf("%d proc", next)), nil
+	}
+	m := drawn(New(items("100 proc", "200 proc"), "", "SIGKILL", reload).WithSender(r.send), 80, 6)
+	m = settled(m)
+	m, _ = press(m, key(tea.KeyTab))
+	m = resized(resized(m, 80, 1), 80, 6)
+	selectedGen := m.settleGen
+	m, cmd := press(m, key(tea.KeyCtrlR))
+	nm, _ := m.Update(cmd())
+	m = nm.(Model)
+	if m.settleGen == selectedGen {
+		t.Fatalf("the reloaded row started no wait:\n%s", plain(m.View()))
+	}
+	nm, _ = m.Update(settledMsg{gen: selectedGen})
+	m, _ = press(nm.(Model), key(tea.KeyEnter))
+	if m.Outcome() != Accepted || !slices.Equal(targetTexts(m), []string{"100 proc"}) {
+		t.Errorf("Enter after the selected row's wait ended: Outcome() = %v, Targets() = %v; want Accepted with 100 proc", m.Outcome(), targetTexts(m))
+	}
+}
+
+// Exact mode changes which rows match, so the rows kil starts with are those
+// of exact mode, and they wait for the first frame too.
+func TestEnterRightAfterStartInExactModeWaits(t *testing.T) {
+	var r recorder
+	m := New(items("101 a_b"), "'ab", "SIGKILL", noReload).WithExact(true).WithSender(r.send)
+	m, _ = press(m, alt('a'), key(tea.KeyEnter))
+	if m.Outcome() != Running {
+		t.Fatalf("Enter before the first frame in exact mode: Outcome() = %v, want Running", m.Outcome())
+	}
+	m, _ = press(settled(m), key(tea.KeyEnter))
+	if !slices.Equal(targetTexts(m), []string{"101 a_b"}) {
+		t.Errorf("Enter after the first frame: Targets() = %v, want 101 a_b", targetTexts(m))
 	}
 }

@@ -11,7 +11,7 @@ import (
 
 // psColumns is the column list for ps -o. comm can contain spaces (e.g.
 // "tmux: server"), so only the PID and PPID are parsed out of a line; the
-// whole line is kept as the process's identity and display text.
+// rest of the line is kept as the process's identity and display text.
 const psColumns = "pid=,ppid=,user=,comm=,args="
 
 // psWide makes ps print whole lines on Linux and macOS: without it, ps cuts
@@ -23,9 +23,12 @@ const psWide = "-ww"
 type Process struct {
 	PID  int
 	PPID int
-	// Line is the ps line with runs of whitespace collapsed, so that lines
-	// from different ps invocations compare equal despite column padding.
-	Line string
+	// Identity is the ps line without the PPID and with runs of whitespace
+	// collapsed, so that lines from different ps invocations compare equal
+	// despite column padding. The PPID is left out because killing a parent
+	// reparents its children: a child selected with its parent is still the
+	// same process and must not be skipped as changed.
+	Identity string
 	// Raw is the ps line as printed, with its column padding, for display
 	// and matching, as fzf would see it.
 	Raw string
@@ -53,10 +56,10 @@ func Parse(out string) ([]Process, error) {
 			return nil, fmt.Errorf("unexpected PPID in ps line: %q", raw)
 		}
 		procs = append(procs, Process{
-			PID:  pid,
-			PPID: ppid,
-			Line: strings.Join(fields, " "),
-			Raw:  strings.TrimRight(raw, "\n"),
+			PID:      pid,
+			PPID:     ppid,
+			Identity: strings.Join(append([]string{fields[0]}, fields[2:]...), " "),
+			Raw:      strings.TrimRight(raw, "\n"),
 		})
 	}
 	return procs, nil
@@ -122,5 +125,5 @@ func Current(pid int) (string, bool) {
 	if err != nil || len(procs) != 1 {
 		return "", false
 	}
-	return procs[0].Line, true
+	return procs[0].Identity, true
 }

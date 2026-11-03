@@ -55,3 +55,26 @@ Using fzf is fine, and so is writing it from scratch in Go.
   is shown, any key other than `Ctrl-C` only closes it, so `Enter` cannot
   signal a row the user cannot see, and `Esc` returns to the list rather than
   leaving kil.
+- `Enter` signals only selected rows drawn on screen. If other selections
+  are off screen (scrolled away, pushed off by pinning, or hidden by a
+  resize), it signals the rows on screen and keeps kil open with the rest
+  brought on screen, so the user sees them before pressing `Enter` again.
+  Signalling them unseen, or dropping them silently, were both rejected.
+  `Esc` after such a partial `Enter` asks `[Y/n]` before leaving the rest;
+  `Ctrl-C` aborts without asking. Bubble Tea draws asynchronously, so an
+  `Enter` typed right away could signal rows not yet on the terminal. `Enter`
+  is therefore ignored for 300 ms after the help closes, and while a selected
+  row on screen came on screen less than 300 ms ago, however it came (a
+  partial `Enter`, scrolling, a resize, a query edit, or starting kil) and
+  whenever it was selected. Each row's wait is its own, so rows that keep
+  coming on screen do not hold `Enter` for rows shown long before. Waiting
+  only after a partial `Enter`, or only for rows already selected, still let
+  quick keys signal unseen rows, such as `Up`, `Alt-A`, `Enter`. The cursor
+  row alone does not wait, so typing a query and pressing `Enter` at once
+  works as in fzf. Keys arriving after the outcome is decided are ignored,
+  because Bubble Tea delivers them until it quits, and `Ctrl-C` then `Enter`
+  signalled rows. `Alt-A` likewise selects only the rows on screen and then
+  scrolls to keep the rows it selected there.
+- The check before signalling compares the ps line without the PPID. Killing
+  a parent reparents its children, so with the PPID a child selected after
+  its parent was skipped as changed and survived.

@@ -144,10 +144,10 @@ func TestToggleAtTheEdgeStaysOnTheToggledRow(t *testing.T) {
 	}
 }
 
-func TestToggleAllShownSelectsOnlyMatches(t *testing.T) {
+func TestToggleRangeSelectsOnlyMatches(t *testing.T) {
 	p := New(items("101 node a", "202 python b", "203 python c"))
 	p.SetQuery("python")
-	p.ToggleAllShown()
+	p.ToggleRange(0, len(p.Rows()))
 	got := targetTexts(p)
 	want := []string{"202 python b", "203 python c"}
 	if !slices.Equal(got, want) {
@@ -235,7 +235,7 @@ func TestTargetsAreAlwaysShownRows(t *testing.T) {
 			case 3:
 				p.Next()
 			case 4:
-				p.ToggleAllShown()
+				p.ToggleRange(0, len(p.Rows()))
 			case 5:
 				subset := slices.Clone(lines)
 				rng.Shuffle(len(subset), func(i, j int) { subset[i], subset[j] = subset[j], subset[i] })
@@ -315,35 +315,45 @@ func TestPinnedRowsKeepTheOrderTheyWereSelectedIn(t *testing.T) {
 	}
 }
 
-func TestToggleAllShownKeepsTheShownOrder(t *testing.T) {
+func TestToggleRangeKeepsTheShownOrder(t *testing.T) {
 	// Equal-length lines rank by score, so "node" puts the tight match first.
 	p := New(items("101 n o d e", "202 node b"))
 	p.SetQuery("node")
 	before := texts(p.Rows())
-	p.ToggleAllShown()
+	p.ToggleRange(0, len(p.Rows()))
 	if got := texts(p.Rows()); !slices.Equal(got, before) {
-		t.Errorf("Rows() after ToggleAllShown = %v, want the order unchanged %v", got, before)
+		t.Errorf("Rows() after ToggleRange = %v, want the order unchanged %v", got, before)
 	}
 }
 
-func TestToggleAllShownDeselectsWhenEverythingShownIsSelected(t *testing.T) {
+func TestToggleRangeDeselectsWhenEverythingShownIsSelected(t *testing.T) {
 	p := New(items("101 node a", "202 python b", "203 python c"))
 	p.SetQuery("python")
-	p.ToggleAllShown()
+	p.ToggleRange(0, len(p.Rows()))
 	if p.SelectedCount() != 2 {
 		t.Fatalf("SelectedCount() = %d after the first toggle, want 2", p.SelectedCount())
 	}
-	p.ToggleAllShown()
+	p.ToggleRange(0, len(p.Rows()))
 	if p.SelectedCount() != 0 {
 		t.Errorf("SelectedCount() = %d after the second toggle, want 0", p.SelectedCount())
 	}
 }
 
-func TestToggleAllShownSelectsTheRestWhenSomeAreSelected(t *testing.T) {
+func TestToggleRangeSelectsTheRestWhenSomeAreSelected(t *testing.T) {
 	p := New(items("101 node a", "202 python b"))
 	p.Toggle(0)
-	p.ToggleAllShown()
+	p.ToggleRange(0, len(p.Rows()))
 	if p.SelectedCount() != 2 {
 		t.Errorf("SelectedCount() = %d, want 2", p.SelectedCount())
+	}
+}
+
+// Alt-A acts on the rows drawn on screen, which the UI passes as a range,
+// so rows outside it stay unselected.
+func TestToggleRangeSelectsOnlyTheRange(t *testing.T) {
+	p := New(items("101 a", "202 b", "303 c"))
+	p.ToggleRange(1, 2)
+	if got := targetTexts(p); !slices.Equal(got, []string{"202 b"}) {
+		t.Errorf("Targets() = %v, want only the row in the range", got)
 	}
 }

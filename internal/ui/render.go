@@ -129,6 +129,20 @@ func scrolled(offset, cursorLine, height, total int) int {
 	return offset
 }
 
+// shownRows returns the range of row indices drawn on screen, from up to
+// to. Alt-A selects only these, so that Enter never signals a process the
+// user cannot see.
+func (m Model) shownRows() (from, to int) {
+	body, _ := m.layout()
+	from, to = len(body), 0
+	for _, i := range body[min(m.offset, len(body)):min(m.offset+m.bodyHeight(), len(body))] {
+		if i != separator {
+			from, to = min(from, i), max(to, i+1)
+		}
+	}
+	return min(from, to), to
+}
+
 // View implements tea.Model. Like fzf's default layout, the prompt is at the
 // bottom and the list grows upward, best match first.
 func (m Model) View() string {
@@ -165,6 +179,19 @@ func (m Model) View() string {
 		"  " + fg(colorHeader) + cut(header, m.width-3) + reset,
 		m.infoLine(len(rows)),
 		bold + fg(colorPrompt) + ">" + reset + fg(colorPrompt) + " " + reset + m.promptText(),
+	}
+	if m.confirming {
+		// Enter answers the question, so a narrow terminal cuts the
+		// explanation rather than the answers.
+		question := "Quit? [Y/n]"
+		why := fmt.Sprintf("%d selected processes were not signalled.", m.picker.SelectedCount())
+		switch room := m.width - 2 - widths.StringWidth(question); {
+		case room >= 10:
+			question = cut(why, room) + " " + question
+		case room < -1:
+			question = "[Y/n]"
+		}
+		footer[2] = bold + fg(colorPointer) + question + reset
 	}
 	footer = footer[len(footer)-m.headerLines():]
 	if m.help {
@@ -301,6 +328,9 @@ func (m Model) infoLine(shown int) string {
 	info := fmt.Sprintf("%d/%d (%d)", shown, m.picker.Total(), m.picker.SelectedCount())
 	if m.picker.Exact() {
 		info += " [exact]"
+	}
+	if m.sent > 0 {
+		info += fmt.Sprintf(" sent %d, %d selected left: Enter to send", m.sent, m.picker.SelectedCount())
 	}
 	// As in fzf, the rule stops one column short of the edge.
 	rule := max(m.width-2-widths.StringWidth(info)-2, 0)

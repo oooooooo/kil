@@ -26,9 +26,9 @@ func TestParse(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Process{
-		{PID: 1, PPID: 0, Line: "1 0 root init /sbin/init",
+		{PID: 1, PPID: 0, Identity: "1 root init /sbin/init",
 			Raw: "    1     0 root     init            /sbin/init"},
-		{PID: 202, PPID: 1, Line: "202 1 alice tmux: server tmux new -s work",
+		{PID: 202, PPID: 1, Identity: "202 alice tmux: server tmux new -s work",
 			Raw: "  202     1 alice    tmux: server    tmux new -s work"},
 	}
 	if !slices.Equal(got, want) {
@@ -107,8 +107,8 @@ func TestCurrentMatchesListedLine(t *testing.T) {
 		t.Fatalf("sleep %d not listed", cmd.Process.Pid)
 	}
 	line, ok := Current(cmd.Process.Pid)
-	if !ok || line != all[i].Line {
-		t.Errorf("Current() = %q, %v; want %q, true", line, ok, all[i].Line)
+	if !ok || line != all[i].Identity {
+		t.Errorf("Current() = %q, %v; want %q, true", line, ok, all[i].Identity)
 	}
 }
 
@@ -141,7 +141,7 @@ func TestLongCommandLinesAreNotCutToColumns(t *testing.T) {
 	if i < 0 || !strings.HasSuffix(all[i].Raw, "-tail 60") {
 		t.Fatalf("List() did not include the whole command line of %d", cmd.Process.Pid)
 	}
-	if line, ok := Current(cmd.Process.Pid); !ok || line != all[i].Line {
+	if line, ok := Current(cmd.Process.Pid); !ok || line != all[i].Identity {
 		t.Errorf("Current() = %q, %v; want the whole line", line, ok)
 	}
 }

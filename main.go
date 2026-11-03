@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -127,7 +128,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		}
 		items := make([]picker.Item, len(procs))
 		for i, p := range procs {
-			items[i] = picker.Item{ID: p.Line, Text: p.Raw}
+			items[i] = picker.Item{ID: p.Identity, Text: p.Raw}
 		}
 		return items, nil
 	}
@@ -137,33 +138,75 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return exitError
 	}
 
-	model, err := pick(ui.New(items, opts.query, signal.Label(sig), list).WithExact(opts.exact || envExact))
-	if err != nil {
-		reportf(stderr, "kil: %v\n", err)
-		return exitError
+	sent := &batches{}
+	send := func(batch []picker.Item) {
+		sent.code = max(sent.code, signalAll(batch, sig, &sent.out, &sent.err))
+		sent.sent += len(batch)
 	}
-	return finish(model, sig, stdout, stderr)
+	model, err := pick(ui.New(items, opts.query, signal.Label(sig), list).WithExact(opts.exact || envExact).WithSender(send))
+	if err != nil {
+		return pickFailed(sent, err, stdout, stderr)
+	}
+	return finish(model, sig, sent, stdout, stderr)
+}
+
+// pickFailed reports a picker failure after the reports of the rows already
+// signalled, which would otherwise be lost.
+func pickFailed(sent *batches, err error, stdout, stderr io.Writer) int {
+	_, _ = sent.out.WriteTo(stdout)
+	_, _ = sent.err.WriteTo(stderr)
+	reportf(stderr, "kil: %v\n", err)
+	return exitError
+}
+
+// batches holds the reports of rows signalled before the picker ended,
+// which cannot be printed while the picker owns the screen.
+type batches struct {
+	out, err bytes.Buffer
+	code     int
+	// sent counts the rows handed to signalAll, to tell whether anything
+	// may have been signalled.
+	sent int
+}
+
+// signalled says what a failure leaves signalled: after a partial Enter,
+// "nothing" would hide the processes reported above it.
+func (b *batches) signalled() string {
+	if b.sent > 0 {
+		return "only the processes reported above were signalled"
+	}
+	return "nothing was signalled"
 }
 
 // finish reports how the picker ended and signals what it accepted.
-func finish(model ui.Model, sig syscall.Signal, stdout, stderr io.Writer) int {
+func finish(model ui.Model, sig syscall.Signal, sent *batches, stdout, stderr io.Writer) int {
+	_, _ = sent.out.WriteTo(stdout)
+	_, _ = sent.err.WriteTo(stderr)
 	switch model.Outcome() {
 	case ui.Aborted:
-		// The user chose to leave, so there is nothing to report.
+		// The user chose to leave, so there is nothing more to report.
 		return exitAborted
+	case ui.Stopped:
+		for _, it := range model.Left() {
+			reportf(stderr, "skipped: not signalled: %s\n", it.Text)
+		}
+		return exitProblems
 	case ui.NothingSelected:
 		reportln(stderr, "kil: nothing selected")
 		return exitProblems
 	case ui.ListFailed:
-		reportf(stderr, "kil: failed to list processes: %v; nothing was signalled\n", model.Err())
+		for _, it := range model.Left() {
+			reportf(stderr, "skipped: not signalled: %s\n", it.Text)
+		}
+		reportf(stderr, "kil: failed to list processes: %v; %s\n", model.Err(), sent.signalled())
 		return exitError
 	case ui.Accepted:
 	default:
-		reportln(stderr, "kil: picker ended unexpectedly; nothing was signalled")
+		reportf(stderr, "kil: picker ended unexpectedly; %s\n", sent.signalled())
 		return exitError
 	}
 
-	return signalAll(model.Targets(), sig, stdout, stderr)
+	return max(sent.code, signalAll(model.Targets(), sig, stdout, stderr))
 }
 
 // pick runs the picker on the controlling terminal, so that stdout and

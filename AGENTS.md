@@ -55,6 +55,14 @@ Using fzf is fine, and so is writing it from scratch in Go.
   the processes the user means.
 - Pinned selections are ordered by when they were selected, so `Alt-A`, which
   selects in the order shown, does not reorder the list.
+- A query change puts the cursor on the first match rather than on the
+  selections pinned before the matches, and `Tab` does not move the cursor
+  from a match onto them. Either left the cursor on a selection, so `Tab`
+  right after typing a query, or a second `Tab`, deselected a row chosen under
+  an earlier query, which then left the screen. With more selections than fit
+  beside the matches, the window follows the cursor and some selections leave
+  the screen; `Enter` then signals the ones on screen first, as after any
+  scroll.
 - The PID, PPID, USER, and COMM columns never scroll away, as with fzf
   `--freeze-left=4`. fzf's horizontal scrolling alone hid them when a match
   was far right, so the user could not tell which process a row was.

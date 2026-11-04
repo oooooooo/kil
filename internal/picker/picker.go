@@ -85,14 +85,14 @@ func (p *Picker) Total() int {
 	return n
 }
 
-// SetQuery filters the rows with s and moves the cursor to the first row.
+// SetQuery filters the rows with s and moves the cursor to the first match.
 func (p *Picker) SetQuery(s string) {
 	p.text = s
 	p.reparse()
 }
 
 // SetExact switches between fuzzy matching and fzf --exact matching, where
-// plain terms match substrings, and moves the cursor to the first row.
+// plain terms match substrings, and moves the cursor to the first match.
 func (p *Picker) SetExact(exact bool) {
 	p.exact = exact
 	p.reparse()
@@ -115,7 +115,17 @@ func (p *Picker) reparse() {
 		p.query = query.Parse(p.text)
 	}
 	p.refresh()
+	// The cursor goes to the first match, the best one when the query ranks
+	// matches, rather than to the pinned selections before it, so that Tab
+	// right after a query change selects that match instead of deselecting a
+	// row chosen earlier. Without a match, it stays on the first row.
 	p.cursor = 0
+	for i, r := range p.rows {
+		if !r.Pinned {
+			p.cursor = i
+			break
+		}
+	}
 }
 
 // Prev moves the cursor to the previous row.
@@ -131,14 +141,18 @@ func (p *Picker) Next() {
 // Toggle flips the selection of the focused row and then moves the cursor
 // step rows from it, to the row that was there before the toggle. That row
 // may have moved, because the toggled row joined or left the pinned rows.
-// If there is no such row, the cursor stays on the toggled row.
+// If there is no such row, or it would take the cursor from a match onto
+// the pinned selections, the cursor stays on the toggled row: from the best
+// match, the next toggle would otherwise deselect a row chosen earlier
+// rather than undo this one, as fzf's does at the end of the list.
 func (p *Picker) Toggle(step int) {
 	if len(p.rows) == 0 {
 		return
 	}
-	toggled := p.rows[p.cursor].Item.ID
+	from := p.rows[p.cursor]
+	toggled := from.Item.ID
 	next := toggled
-	if i := p.cursor + step; i >= 0 && i < len(p.rows) {
+	if i := p.cursor + step; i >= 0 && i < len(p.rows) && (from.Pinned || !p.rows[i].Pinned) {
 		next = p.rows[i].Item.ID
 	}
 	if _, ok := p.selected[toggled]; ok {

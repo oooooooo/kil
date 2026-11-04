@@ -1259,7 +1259,7 @@ func TestAltATwiceWithSelectionsFromAnotherQuery(t *testing.T) {
 	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload), 80, 12)
 	// 110 is selected under the query "11", and 102 and 112 under "2",
 	// which 110 does not match.
-	m, _ = press(m, typed("11"), key(KeyTab), ctrl('u'), typed("2"), key(KeyUp))
+	m, _ = press(m, typed("11"), key(KeyTab), ctrl('u'), typed("2"))
 	m, _ = press(m, key(KeyTab, ModShift), key(KeyTab, ModShift))
 	if got := slices.Sorted(maps.Keys(selectedTexts(m))); !slices.Equal(got, []string{"102 proc", "110 proc", "112 proc"}) {
 		t.Fatalf("selected %v, want 102, 110, and 112:\n%s", got, plain(m.render()))
@@ -1288,5 +1288,55 @@ func TestEnterWaitsForASelectionAltABroughtOnScreen(t *testing.T) {
 	m, _ = press(m, key(KeyEnter))
 	if len(r.sent) != 0 || m.Outcome() != Running {
 		t.Errorf("Enter right after Alt-A: sent %v, Outcome() = %v; want nothing sent and Running", r.sent, m.Outcome())
+	}
+}
+
+// Tab right after a query change selects the best match: it deselected the
+// selection pinned at the bottom, which the cursor was on.
+func TestTabAfterQueryChangeSelectsTheBestMatch(t *testing.T) {
+	m := sized(New(items("101 node a", "202 python b", "203 python c"), "", "SIGKILL", noReload))
+	m, _ = press(m, typed("node"), key(KeyTab), ctrl('u'), typed("python"), key(KeyTab))
+	if got := slices.Sorted(maps.Keys(selectedTexts(m))); !slices.Equal(got, []string{"101 node a", "202 python b"}) {
+		t.Errorf("selected %v after Tab, want node kept and the best match \"202 python b\" added:\n%s", got, plain(m.render()))
+	}
+}
+
+// Tab moves the cursor down after toggling, but not from the matches onto
+// the selections pinned below them, so that Tab again after Tab on the best
+// match deselects that match, as fzf's Tab does at the end of the list,
+// rather than deselect a row chosen earlier, which may then leave the
+// screen.
+func TestTabTwiceAfterQueryChangeKeepsTheEarlierSelection(t *testing.T) {
+	m := sized(New(items("101 node a", "202 python b", "203 python c"), "", "SIGKILL", noReload))
+	m, _ = press(m, typed("node"), key(KeyTab), ctrl('u'), typed("python"), key(KeyTab), key(KeyTab))
+	if got := slices.Sorted(maps.Keys(selectedTexts(m))); !slices.Equal(got, []string{"101 node a"}) {
+		t.Errorf("selected %v after Tab twice, want only node, as the second Tab undoes the first:\n%s", got, plain(m.render()))
+	}
+}
+
+// With more selections than fit beside the matches, a query change puts the
+// cursor on the first match above them and the window follows it, so some
+// selections leave the screen. Enter then signals only the selections on
+// screen and brings the rest back, as after any scroll.
+func TestQueryChangeWithManySelectionsMakesEnterPartial(t *testing.T) {
+	var r recorder
+	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload).WithSender(r.send), 80, 10)
+	m, _ = press(m, alt('a'))
+	m, _ = press(settled(m), typed("1"))
+	m = settled(m)
+	shown, offscreen := m.selectedOnScreen()
+	if !offscreen {
+		t.Fatalf("every selection is still on screen after the query change:\n%s", plain(m.render()))
+	}
+	var want []string
+	for _, it := range shown {
+		want = append(want, it.Text)
+	}
+	m, _ = press(m, key(KeyEnter))
+	if len(r.sent) != 1 || !slices.Equal(r.sent[0], want) || m.Outcome() != Running {
+		t.Fatalf("Enter: sent %v, Outcome() = %v; want only %v, the selections on screen, and Running", r.sent, m.Outcome(), want)
+	}
+	if _, offscreen := m.selectedOnScreen(); offscreen {
+		t.Errorf("the selections left are not back on screen:\n%s", plain(m.render()))
 	}
 }

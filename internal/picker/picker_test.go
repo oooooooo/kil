@@ -87,7 +87,6 @@ func TestSelectingAcrossQueries(t *testing.T) {
 	p.SetQuery("node")
 	p.Toggle(1)
 	p.SetQuery("python")
-	p.Next() // skip the pinned node row
 	p.Toggle(1)
 
 	got := targetTexts(p)
@@ -304,9 +303,8 @@ func TestPinnedRowsKeepTheOrderTheyWereSelectedIn(t *testing.T) {
 	p := New(items("101 node a", "202 python b", "303 ruby c"))
 	p.Next()
 	p.Next()
-	p.Toggle(0) // ruby first
-	p.SetQuery("")
-	p.Next() // node is the first unpinned row now
+	p.Toggle(0)    // ruby first
+	p.SetQuery("") // the cursor goes to node, the first match
 	p.Toggle(0)
 	got := targetTexts(p)
 	want := []string{"303 ruby c", "101 node a"}
@@ -355,5 +353,47 @@ func TestToggleRangeSelectsOnlyTheRange(t *testing.T) {
 	p.ToggleRange(1, 2)
 	if got := targetTexts(p); !slices.Equal(got, []string{"202 b"}) {
 		t.Errorf("Targets() = %v, want only the row in the range", got)
+	}
+}
+
+// A query change puts the cursor on the best match, not on a pinned
+// selection, so that Tab right after it selects the match rather than
+// deselect a row chosen earlier, as fzf's cursor goes to the best match.
+func TestQueryChangePutsTheCursorOnTheBestMatch(t *testing.T) {
+	p := New(items("101 node a", "202 python b", "203 python c"))
+	p.Toggle(1) // selects node
+	for _, change := range []struct {
+		name string
+		do   func()
+	}{
+		{"SetQuery", func() { p.SetQuery("python") }},
+		{"SetExact", func() { p.SetExact(true) }},
+	} {
+		change.do()
+		if got := p.Rows()[p.Cursor()].Item.Text; got != "202 python b" {
+			t.Errorf("%s: cursor on %q, want the best match \"202 python b\"", change.name, got)
+		}
+	}
+}
+
+// With no match, the cursor stays on a row: the first pinned selection.
+func TestQueryWithoutMatchesPutsTheCursorOnASelection(t *testing.T) {
+	p := New(items("101 node a", "202 python b"))
+	p.Toggle(1) // selects node
+	p.SetQuery("zzz")
+	if p.Cursor() != 0 || len(p.Rows()) != 1 {
+		t.Errorf("Cursor() = %d with rows %v, want 0 on the pinned node", p.Cursor(), texts(p.Rows()))
+	}
+}
+
+// Toggle does not move the cursor from a match onto the pinned selections:
+// the next toggle would deselect one of them rather than undo this one.
+func TestToggleDoesNotStepFromTheMatchesOntoThePinnedRows(t *testing.T) {
+	p := New(items("101 node a", "202 python b", "203 python c"))
+	p.Toggle(1) // selects node
+	p.SetQuery("python")
+	p.Toggle(-1)
+	if got := p.Rows()[p.Cursor()].Item.Text; got != "202 python b" {
+		t.Errorf("cursor on %q after Tab, want it to stay on \"202 python b\"", got)
 	}
 }

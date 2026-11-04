@@ -379,7 +379,7 @@ func lineEdit(k KeyPressMsg) func(*lineInput) {
 }
 
 // edit applies f to the query. Moving the caret keeps the list as it is;
-// only a changed query filters again and moves the cursor back to the best
+// only a changed query filters again and moves the cursor back to the first
 // match.
 func (m *Model) edit(f func(*lineInput)) {
 	before := m.input.String()

@@ -448,38 +448,33 @@ func (m Model) confirm(key string) (Model, Cmd) {
 
 // windowAfterAltA returns the first body line to show after Alt-A selected
 // the rows with IDs added among those with IDs shown, which were on screen.
-// Every shown row is now selected and pinned, and the window keeps the
-// added rows on screen and, as far as they fit below them, the rows selected
-// before, so that Alt-A again deselects them rather than select rows that
-// came on screen as the list moved. After Alt-A deselected the rows, the
-// window is asked to go back to the bottom, and moves only as far as the
-// cursor row stays on screen.
+// Every shown row is now selected and pinned, and the window starts at the
+// lowest of them, so that Alt-A again deselects them rather than select
+// rows that came on screen as the list moved. They all fit: the shown rows
+// selected before were the last pinned rows, and Alt-A pins the rows it
+// selected right after them. After Alt-A deselected the rows, the window is
+// asked to go back to the bottom, and moves only as far as the cursor row
+// stays on screen.
 func (m Model) windowAfterAltA(added, shown []string) int {
 	if len(added) == 0 {
 		return 0
 	}
-	low, _ := m.linesOf(shown)
-	_, high := m.linesOf(added)
-	return max(low, high-m.bodyHeight()+1)
+	return m.firstLineOf(shown)
 }
 
-// linesOf returns the lowest and highest body lines showing the items with
-// the given IDs, or 0 and 0 if none is shown.
-func (m Model) linesOf(ids []string) (low, high int) {
+// firstLineOf returns the lowest body line showing one of the items with the
+// given IDs, or 0 if none is shown.
+func (m Model) firstLineOf(ids []string) int {
 	want := map[string]bool{}
 	for _, id := range ids {
 		want[id] = true
 	}
 	body, _ := m.layout()
 	rows := m.picker.Rows()
-	low, high = len(body), -1
 	for line, i := range body {
 		if i != separator && want[rows[i].Item.ID] {
-			low, high = min(low, line), max(high, line)
+			return line
 		}
 	}
-	if high < 0 {
-		return 0, 0
-	}
-	return low, high
+	return 0
 }

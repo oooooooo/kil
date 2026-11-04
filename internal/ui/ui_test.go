@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -1204,5 +1205,88 @@ func TestAltATwiceDeselectsRowsSelectedBefore(t *testing.T) {
 	m, _ = press(m, alt('a'))
 	if n := m.picker.SelectedCount(); n != 0 {
 		t.Errorf("Alt-A again left %d rows selected, want 0:\n%s", n, plain(m.render()))
+	}
+}
+
+// selectedTexts returns the texts of the selected rows.
+func selectedTexts(m Model) map[string]bool {
+	sel := map[string]bool{}
+	for _, r := range m.picker.Rows() {
+		if r.Selected {
+			sel[r.Item.Text] = true
+		}
+	}
+	return sel
+}
+
+// secondAltADeselects presses Alt-A twice and fails unless the second one
+// deselects exactly the rows on screen, as AGENTS.md promises.
+func secondAltADeselects(t *testing.T, m Model) {
+	t.Helper()
+	m, _ = press(m, alt('a'))
+	want := selectedTexts(m)
+	for _, r := range m.picker.Rows() {
+		if m.drawnIDs()[r.Item.ID] {
+			if !r.Selected {
+				t.Fatalf("Alt-A left %q on screen unselected:\n%s", r.Item.Text, plain(m.render()))
+			}
+			delete(want, r.Item.Text)
+		}
+	}
+	m, _ = press(m, alt('a'))
+	if got := selectedTexts(m); !maps.Equal(got, want) {
+		t.Errorf("Alt-A again left %v selected, want %v, the selections that were off screen:\n%s", slices.Sorted(maps.Keys(got)), slices.Sorted(maps.Keys(want)), plain(m.render()))
+	}
+}
+
+// With more selections than fit, the rows Alt-A selected and those selected
+// before do not all fit, and Alt-A again still only deselects.
+func TestAltATwiceWithMoreSelectionsThanFit(t *testing.T) {
+	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload), 80, 13)
+	m, _ = press(m, alt('a'))
+	m = resized(m, 80, 8)
+	for range 10 {
+		m, _ = press(m, key(KeyUp))
+	}
+	m, _ = press(m, key(KeyTab, ModShift), key(KeyTab, ModShift))
+	secondAltADeselects(t, m)
+}
+
+// A row selected under another query, which the query now hides, stays
+// pinned below the rows selected after it, and Alt-A again still deselects
+// only the rows on screen.
+func TestAltATwiceWithSelectionsFromAnotherQuery(t *testing.T) {
+	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload), 80, 12)
+	// 110 is selected under the query "11", and 102 and 112 under "2",
+	// which 110 does not match.
+	m, _ = press(m, typed("11"), key(KeyTab), ctrl('u'), typed("2"), key(KeyUp))
+	m, _ = press(m, key(KeyTab, ModShift), key(KeyTab, ModShift))
+	if got := slices.Sorted(maps.Keys(selectedTexts(m))); !slices.Equal(got, []string{"102 proc", "110 proc", "112 proc"}) {
+		t.Fatalf("selected %v, want 102, 110, and 112:\n%s", got, plain(m.render()))
+	}
+	secondAltADeselects(t, m)
+}
+
+// When Alt-A selects the last unselected rows, the separator goes and the
+// list moves by a line, which can bring on screen a row selected earlier
+// that the user has not seen. Enter then waits, as for any row that has just
+// come on screen.
+func TestEnterWaitsForASelectionAltABroughtOnScreen(t *testing.T) {
+	var r recorder
+	m := drawn(New(items(numberedLines(3)...), "", "SIGKILL", noReload).WithSender(r.send), 80, 5)
+	m, _ = press(m, key(KeyTab, ModShift), key(KeyTab, ModShift))
+	m = settled(m)
+	before := m.drawnIDs()
+	m, _ = press(m, alt('a'))
+	revealed := false
+	for id := range m.drawnIDs() {
+		revealed = revealed || !before[id]
+	}
+	if !revealed {
+		t.Fatalf("Alt-A brought no row on screen:\n%s", plain(m.render()))
+	}
+	m, _ = press(m, key(KeyEnter))
+	if len(r.sent) != 0 || m.Outcome() != Running {
+		t.Errorf("Enter right after Alt-A: sent %v, Outcome() = %v; want nothing sent and Running", r.sent, m.Outcome())
 	}
 }

@@ -5,13 +5,10 @@ import (
 	"errors"
 	"os"
 	"os/exec"
-	"slices"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
-
-	tea "charm.land/bubbletea/v2"
 
 	"github.com/oooooooo/kil/internal/picker"
 	"github.com/oooooooo/kil/internal/proc"
@@ -190,6 +187,31 @@ func TestPartialEnterStopsOnTermination(t *testing.T) {
 	}
 }
 
+// SIGHUP does not stop a partial Enter already signalling, but one caught
+// while picking ends kil before the next batch starts: the picker would
+// have ended on it, had the Enter not come first.
+func TestPartialEnterAfterAHangupSignalsNothing(t *testing.T) {
+	var b batches
+	it := ownSleeper(t)
+	sender(&b, 0, caught(syscall.SIGHUP))([]picker.Item{it})
+	var stdout, stderr bytes.Buffer
+	b.flush(&stdout, &stderr)
+	if stdout.Len() != 0 || stderr.String() != "skipped: not signalled: "+it.Text+"\n" || b.sent != 0 {
+		t.Errorf("partial Enter after SIGHUP: stdout %q, stderr %q, sent %d; want it skipped", stdout.String(), stderr.String(), b.sent)
+	}
+}
+
+// When the terminal fails as a signal ends the picker, as when it hangs up,
+// kil still ends with the signal's status, after reporting the failure.
+func TestPickerFailureAfterASignalEndsWithItsStatus(t *testing.T) {
+	var b batches
+	var stdout, stderr bytes.Buffer
+	code := pickFailed(&b, errors.New("picker failed: read /dev/tty: input/output error"), &stdout, &stderr, caught(syscall.SIGHUP))
+	if code != 129 || !strings.Contains(stderr.String(), "input/output error") {
+		t.Errorf("pickFailed after SIGHUP = %d, stderr %q; want 129 and the error", code, stderr.String())
+	}
+}
+
 // A signal that ends the picker ends kil with 128 plus its number, as a
 // shell reports a command killed by it, after the reports of a partial
 // Enter. SIGTERM, SIGINT, or SIGQUIT wins over an earlier SIGHUP.
@@ -215,100 +237,25 @@ func TestSignalWhilePickingEndsWithItsStatus(t *testing.T) {
 	}
 }
 
-// fakeJob records the steps of a suspension instead of taking them.
-type fakeJob struct {
-	steps      []string
-	releaseErr error
-	// restored runs as the terminal is restored, as a key typed right then
-	// would.
-	restored func()
-}
-
-func (f *fakeJob) suspender(in *interrupts, jobControl bool) suspender {
-	return suspender{
-		in:         in,
-		canSuspend: func() bool { return jobControl },
-		release: func() error {
-			f.steps = append(f.steps, "release")
-			return f.releaseErr
-		},
-		stop: func() error {
-			f.steps = append(f.steps, "stop")
-			return nil
-		},
-		restore: func() error {
-			f.steps = append(f.steps, "restore")
-			if f.restored != nil {
-				f.restored()
-			}
-			return nil
-		},
-	}
-}
-
-// accepting returns a picker in which Enter would signal the one row.
-func accepting(t *testing.T) ui.Model {
-	t.Helper()
-	m := ui.New([]picker.Item{{ID: "101 a", Text: "101 a"}}, "", "SIGKILL", nil)
-	for _, msg := range []tea.Msg{tea.WindowSizeMsg{Width: 80, Height: 24}, m.Init()()} {
-		next, _ := m.Update(msg)
-		m = next.(ui.Model)
-	}
-	return m
-}
-
-// kil stops only after the terminal is restored for the shell, and after fg
-// the picker hears that it resumed before any key typed meanwhile, so that
-// Enter waits until the screen is drawn again.
-func TestSuspendResumesBeforeQueuedKeys(t *testing.T) {
-	var queued []tea.Msg
-	job := &fakeJob{restored: func() { queued = append(queued, tea.KeyPressMsg{Code: tea.KeyEnter}) }}
-	m := accepting(t)
-	got := job.suspender(nil, true).filter(m, tea.SuspendMsg{})
-	if want := []string{"release", "stop", "restore"}; !slices.Equal(job.steps, want) {
-		t.Errorf("steps = %v, want %v", job.steps, want)
-	}
-	if _, ok := got.(tea.ResumeMsg); !ok {
-		t.Fatalf("filter returned %T, want tea.ResumeMsg", got)
-	}
-	// Bubble Tea hands the filter's result to the picker before reading
-	// the next message.
-	for _, msg := range append([]tea.Msg{got}, queued...) {
-		next, _ := m.Update(msg)
-		m = next.(ui.Model)
-	}
-	if m.Outcome() != ui.Running {
-		t.Errorf("Enter typed as kil resumed: Outcome() = %v, want Running", m.Outcome())
-	}
-}
-
 // Without a shell to bring kil back, as when a terminal emulator or tmux
 // runs kil directly, stopping kil would leave it stopped for good, so
 // Ctrl-Z does nothing. Nor does it once kil is ending.
 func TestSuspendIsIgnored(t *testing.T) {
-	aborted, _ := accepting(t).Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	running := ui.New([]picker.Item{{ID: "101 a", Text: "101 a"}}, "", "SIGKILL", nil)
+	aborted, _ := running.Update(ui.KeyPressMsg{Code: 'c', Mod: ui.ModCtrl})
 	for name, tt := range map[string]struct {
-		m          tea.Model
+		m          ui.Model
 		in         *interrupts
 		jobControl bool
+		want       bool
 	}{
-		"without job control": {accepting(t), nil, false},
-		"after Ctrl-C":        {aborted, nil, true},
-		"after a signal":      {accepting(t), caught(syscall.SIGTERM), true},
+		"while picking":       {running, nil, true, true},
+		"without job control": {running, nil, false, false},
+		"after Ctrl-C":        {aborted, nil, true, false},
+		"after a signal":      {running, caught(syscall.SIGTERM), true, false},
 	} {
-		job := &fakeJob{}
-		if got := job.suspender(tt.in, tt.jobControl).filter(tt.m, tea.SuspendMsg{}); got != nil || len(job.steps) != 0 {
-			t.Errorf("%s: filter returned %v after steps %v; want nil and no step", name, got, job.steps)
+		if got := canSuspend(tt.in, func() bool { return tt.jobControl })(tt.m); got != tt.want {
+			t.Errorf("%s: canSuspend = %v, want %v", name, got, tt.want)
 		}
-	}
-}
-
-// If the terminal cannot be released, stopping would leave it in raw mode,
-// so kil keeps running.
-func TestFailedReleaseDoesNotStop(t *testing.T) {
-	job := &fakeJob{releaseErr: errors.New("release failed")}
-	job.suspender(nil, true).filter(accepting(t), tea.SuspendMsg{})
-	if slices.Contains(job.steps, "stop") {
-		t.Errorf("steps = %v, want no stop after a failed release", job.steps)
 	}
 }

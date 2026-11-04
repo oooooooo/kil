@@ -5,8 +5,6 @@ import (
 	"maps"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
-
 	"github.com/oooooooo/kil/internal/picker"
 )
 
@@ -29,7 +27,7 @@ const (
 	Stopped
 )
 
-// A Model is the picker's Bubble Tea model.
+// A Model is the picker's state. Run drives it on a terminal.
 type Model struct {
 	picker    *picker.Picker
 	input     lineInput
@@ -51,9 +49,9 @@ type Model struct {
 	// have not been signalled.
 	confirming bool
 	left       []picker.Item
-	// Bubble Tea draws asynchronously, so a row that has just come on screen
-	// may not be on the terminal yet, and Enter waits rather than signal a
-	// row the user may not have seen. Each change that brings rows on screen
+	// Keys typed ahead reach kil before the user has seen the frames drawn
+	// between them, so a row that has just come on screen may not have been
+	// seen, and Enter waits rather than signal it. Each change that brings rows on screen
 	// starts a wait numbered settleGen. fresh maps each such row to the wait
 	// that ends its own, and redrawGen is the wait after the whole screen
 	// was drawn again, as when the help closed or kil resumed after Ctrl-Z.
@@ -88,7 +86,7 @@ func New(items []picker.Item, initial, label string, reload func() ([]picker.Ite
 }
 
 // unseen returns m with the rows it draws waiting for the first frame:
-// nothing is on the terminal until Bubble Tea draws it, and Init starts the
+// nothing is on the terminal until Run draws it, and Init starts the
 // wait. Each option that changes the rows calls it again.
 func (m Model) unseen() Model {
 	m.settleGen = 1
@@ -129,18 +127,19 @@ func (m Model) Targets() []picker.Item { return m.targets }
 // Err returns the reload error once the outcome is ListFailed.
 func (m Model) Err() error { return m.err }
 
-// Init implements tea.Model.
-func (m Model) Init() tea.Cmd { return m.settleAfter(m.settleGen) }
+// Init implements Model.
+func (m Model) Init() Cmd { return m.settleAfter(m.settleGen) }
 
-// settleAfter ends the wait numbered gen once Bubble Tea has had time to draw.
-func (m Model) settleAfter(gen int) tea.Cmd {
-	return tea.Tick(settleTime, func(time.Time) tea.Msg { return settledMsg{gen} })
+// settleAfter ends the wait numbered gen once the user has had time to see
+// what was drawn.
+func (m Model) settleAfter(gen int) Cmd {
+	return Tick(settleTime, func(time.Time) Msg { return settledMsg{gen} })
 }
 
-// Update implements tea.Model.
-func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Bubble Tea keeps delivering messages until it has quit, and a key
-	// typed then must not change what kil signals.
+// Update implements Model.
+func (m Model) Update(msg Msg) (Model, Cmd) {
+	// Once the outcome is decided, nothing may change what kil signals,
+	// such as a Cmd's result arriving late.
 	if m.outcome != Running {
 		return m, nil
 	}
@@ -148,13 +147,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// is taken before it changes.
 	drawn := m.drawnIDs()
 	next, cmd := m.update(msg)
-	nm := next.(Model)
+	nm := next
 	body, cursorLine := nm.layout()
 	nm.offset = scrolled(nm.offset, cursorLine, nm.bodyHeight(), len(body))
 	if nm.outcome != Running {
 		return nm, cmd
 	}
-	_, resumed := msg.(tea.ResumeMsg)
+	_, resumed := msg.(ResumeMsg)
 	redrawn := resumed || m.help && !nm.help
 	var came []string
 	for id := range nm.drawnIDs() {
@@ -178,7 +177,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if redrawn {
 		nm.redrawGen = nm.settleGen
 	}
-	return nm, tea.Batch(cmd, nm.settleAfter(nm.settleGen))
+	return nm, Batch(cmd, nm.settleAfter(nm.settleGen))
 }
 
 // drawnIDs returns the IDs of the rows drawn on screen. The help hides
@@ -213,13 +212,12 @@ func (m Model) waiting() bool {
 	return false
 }
 
-func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (m Model) update(msg Msg) (Model, Cmd) {
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
+	case WindowSizeMsg:
 		// Some terminals, such as serial consoles, report 0 for an unknown
 		// dimension, which would leave no room for a row, so that dimension
-		// keeps its size from before. Bubble Tea does not cut the view
-		// along it either.
+		// keeps its size from before.
 		if msg.Width > 0 {
 			m.width = msg.Width
 		}
@@ -244,12 +242,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.sent > 0 && m.picker.SelectedCount() > 0 {
 				m.left = m.picker.Targets()
 			}
-			return m, tea.Quit
+			return m, Quit
 		}
 		m.picker.Reload(msg.items)
-	case tea.KeyPressMsg:
+	case KeyPressMsg:
 		return m.handleKey(msg)
-	case tea.PasteMsg:
+	case PasteMsg:
 		// A paste only edits the query: it must not answer the question
 		// or close the help, which the user did not see it do.
 		if !m.confirming && !m.help {
@@ -259,12 +257,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m Model) handleKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleKey(k KeyPressMsg) (Model, Cmd) {
 	key := k.String()
 	// Ctrl-Z suspends kil as a shell job, in the help and the question too,
 	// as Ctrl-C aborts there.
 	if key == "ctrl+z" {
-		return m, tea.Suspend
+		return m, Suspend
 	}
 	if m.confirming {
 		return m.confirm(key)
@@ -293,10 +291,10 @@ func (m Model) handleKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.outcome = Aborted
-		return m, tea.Quit
+		return m, Quit
 	case "ctrl+c":
 		m.outcome = Aborted
-		return m, tea.Quit
+		return m, Quit
 	case "enter":
 		// Without room for rows, the cursor row is not on screen.
 		if m.reloading || m.waiting() || m.bodyHeight() == 0 {
@@ -310,7 +308,7 @@ func (m Model) handleKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if len(m.targets) == 0 {
 			m.outcome = NothingSelected
 		}
-		return m, tea.Quit
+		return m, Quit
 	// The list grows upward from the prompt, as in fzf's default layout, so
 	// moving up on screen goes to the next row and down to the previous.
 	case "up", "ctrl+p":
@@ -330,7 +328,7 @@ func (m Model) handleKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.reloading = true
 		reload := m.reload
-		return m, func() tea.Msg {
+		return m, func() Msg {
 			items, err := reload()
 			return reloadMsg{items, err}
 		}
@@ -344,7 +342,7 @@ func (m Model) handleKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 // lineEdit returns how k edits the query with readline's keys, or nil if k
 // does not edit it.
-func lineEdit(k tea.KeyPressMsg) func(*lineInput) {
+func lineEdit(k KeyPressMsg) func(*lineInput) {
 	switch k.String() {
 	case "ctrl+a", "home":
 		return (*lineInput).home
@@ -371,7 +369,7 @@ func lineEdit(k tea.KeyPressMsg) func(*lineInput) {
 	}
 	// Text typed with Ctrl or Alt is a key binding kil does not have, not
 	// text for the query.
-	if k.Text != "" && k.Mod&(tea.ModCtrl|tea.ModAlt) == 0 {
+	if k.Text != "" && k.Mod&(ModCtrl|ModAlt) == 0 {
 		return func(in *lineInput) { in.insert([]rune(k.Text)) }
 	}
 	return nil
@@ -408,7 +406,7 @@ func (m Model) selectedOnScreen() (shown []picker.Item, offscreen bool) {
 // sendShown signals the selected rows on screen and keeps kil open with the
 // rest of the selection brought on screen, so that Enter never signals a
 // process the user cannot see and the user sees what is left.
-func (m Model) sendShown(shown []picker.Item) (Model, tea.Cmd) {
+func (m Model) sendShown(shown []picker.Item) (Model, Cmd) {
 	if m.send == nil {
 		return m, nil
 	}
@@ -425,20 +423,20 @@ func (m Model) sendShown(shown []picker.Item) (Model, tea.Cmd) {
 }
 
 // settleTime is how long Enter waits after selections come on screen: long
-// enough for Bubble Tea to draw them, short enough not to feel slow.
+// enough for the user to see them, short enough not to feel slow.
 const settleTime = 300 * time.Millisecond
 
 // confirm answers Esc's question about leaving selections not signalled:
 // Y or Enter leaves, and n or Esc goes back to the list. Ctrl-C still aborts.
-func (m Model) confirm(key string) (tea.Model, tea.Cmd) {
+func (m Model) confirm(key string) (Model, Cmd) {
 	switch key {
 	case "ctrl+c":
 		m.outcome = Aborted
-		return m, tea.Quit
+		return m, Quit
 	case "enter", "y", "Y":
 		m.left = m.picker.Targets()
 		m.outcome = Stopped
-		return m, tea.Quit
+		return m, Quit
 	case "esc", "n", "N":
 		m.confirming = false
 	}

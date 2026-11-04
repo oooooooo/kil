@@ -6,7 +6,6 @@ import (
 	"sync"
 	"syscall"
 
-	tea "charm.land/bubbletea/v2"
 	"golang.org/x/sys/unix"
 
 	"github.com/oooooooo/kil/internal/picker"
@@ -148,46 +147,25 @@ var currentLine = proc.Current
 // holding the reports in b until the picker has ended.
 func sender(b *batches, sig syscall.Signal, in *interrupts) func([]picker.Item) {
 	return func(batch []picker.Item) {
+		// A signal caught while picking ends kil, so no batch starts after
+		// it, although SIGHUP does not stop a batch already started.
+		if in.first() != nil {
+			for _, it := range batch {
+				reportf(b.stderr(), "skipped: not signalled: %s\n", it.Text)
+			}
+			return
+		}
 		b.code = max(b.code, signalAll(batch, sig, b.stdout(), b.stderr(), in))
 		b.sent += len(batch)
 	}
 }
 
-// suspender suspends kil for Ctrl-Z or SIGTSTP. Bubble Tea's own suspend
-// let keys typed as kil resumed reach the picker before it heard that kil
-// had resumed, so Enter did not wait for the screen to be drawn again; it
-// also stopped kil by a SIGTSTP that kil, catching SIGTSTP, never received.
-type suspender struct {
-	in *interrupts
-	// canSuspend reports whether a shell can bring kil back once stopped.
-	canSuspend func() bool
-	// release gives the terminal back to the shell, stop stops kil until
-	// it is continued, and restore takes the terminal again.
-	release, stop, restore func() error
-}
-
-// filter is a Bubble Tea filter. It runs on Bubble Tea's event loop, so no
-// key reaches the picker while kil suspends, and the tea.ResumeMsg it
-// returns reaches the picker before any key typed as kil resumed.
-func (s suspender) filter(m tea.Model, msg tea.Msg) tea.Msg {
-	if _, ok := msg.(tea.SuspendMsg); !ok {
-		return msg
+// canSuspend returns whether kil may stop for Ctrl-Z or SIGTSTP: only while
+// picking, before any signal is caught, and with a shell to bring it back.
+func canSuspend(in *interrupts, jobControl func() bool) func(ui.Model) bool {
+	return func(m ui.Model) bool {
+		return m.Outcome() == ui.Running && in.first() == nil && jobControl()
 	}
-	// Ctrl-Z's tea.SuspendMsg arrives after the key, so kil may already be
-	// ending.
-	if model, ok := m.(ui.Model); !ok || model.Outcome() != ui.Running || s.in.first() != nil {
-		return nil
-	}
-	if !s.canSuspend() {
-		return nil
-	}
-	if err := s.release(); err == nil {
-		_ = s.stop()
-	}
-	// The terminal is taken again even after a failed release, which may
-	// have released part of it.
-	_ = s.restore()
-	return tea.ResumeMsg{}
 }
 
 // jobControlled reports whether a shell can bring kil back once stopped: its

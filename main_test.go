@@ -10,8 +10,6 @@ import (
 	"syscall"
 	"testing"
 
-	tea "charm.land/bubbletea/v2"
-
 	"github.com/oooooooo/kil/internal/picker"
 	"github.com/oooooooo/kil/internal/proc"
 	"github.com/oooooooo/kil/internal/ui"
@@ -142,10 +140,10 @@ func TestClosedStdoutDoesNotStopSignalling(t *testing.T) {
 // Esc and Ctrl-C are how the user leaves kil on purpose, so they end
 // quietly, as fzf does, with only the exit status telling a script.
 func TestAbortEndsWithoutAMessage(t *testing.T) {
-	for _, k := range []tea.KeyPressMsg{{Code: tea.KeyEscape}, {Code: 'c', Mod: tea.ModCtrl}} {
+	for _, k := range []ui.KeyPressMsg{{Code: ui.KeyEscape}, {Code: 'c', Mod: ui.ModCtrl}} {
 		next, _ := ui.New(nil, "", "SIGKILL", nil).Update(k)
 		var stdout, stderr bytes.Buffer
-		code := finish(next.(ui.Model), syscall.SIGKILL, &batches{}, &stdout, &stderr, nil)
+		code := finish(next, syscall.SIGKILL, &batches{}, &stdout, &stderr, nil)
 		if code != exitAborted || stdout.Len() != 0 || stderr.Len() != 0 {
 			t.Errorf("%v: finish = %d, stdout %q, stderr %q; want %d and no output", k, code, stdout.String(), stderr.String(), exitAborted)
 		}
@@ -207,10 +205,10 @@ func TestStoppedReportsEarlierBatchesAndTheSelectionsLeft(t *testing.T) {
 		line := fmt.Sprintf("%03d proc", 100+i)
 		its = append(its, picker.Item{ID: line, Text: line})
 	}
-	press := func(m ui.Model, msgs ...tea.Msg) ui.Model {
+	press := func(m ui.Model, msgs ...ui.Msg) ui.Model {
 		for _, msg := range msgs {
 			next, _ := m.Update(msg)
-			m = next.(ui.Model)
+			m = next
 		}
 		return m
 	}
@@ -220,13 +218,13 @@ func TestStoppedReportsEarlierBatchesAndTheSelectionsLeft(t *testing.T) {
 		}
 	})
 	m = press(m,
-		tea.WindowSizeMsg{Width: 80, Height: 24},
+		ui.WindowSizeMsg{Width: 80, Height: 24},
 		m.Init()(), // the first frame is drawn
-		tea.KeyPressMsg{Code: 'a', Mod: tea.ModAlt},
-		tea.WindowSizeMsg{Width: 80, Height: 10},
-		tea.KeyPressMsg{Code: tea.KeyEnter},
-		tea.KeyPressMsg{Code: tea.KeyEscape},
-		tea.KeyPressMsg{Code: 'y', Text: "y"},
+		ui.KeyPressMsg{Code: 'a', Mod: ui.ModAlt},
+		ui.WindowSizeMsg{Width: 80, Height: 10},
+		ui.KeyPressMsg{Code: ui.KeyEnter},
+		ui.KeyPressMsg{Code: ui.KeyEscape},
+		ui.KeyPressMsg{Code: 'y', Text: "y"},
 	)
 	if m.Outcome() != ui.Stopped {
 		t.Fatalf("Outcome() = %v, want Stopped", m.Outcome())
@@ -249,7 +247,7 @@ func TestPickerFailureKeepsEarlierReports(t *testing.T) {
 	var b batches
 	reportln(b.stdout(), "sent SIGKILL: 101 a")
 	var stdout, stderr bytes.Buffer
-	code := pickFailed(&b, errors.New("read /dev/tty: input/output error"), &stdout, &stderr)
+	code := pickFailed(&b, errors.New("read /dev/tty: input/output error"), &stdout, &stderr, nil)
 	if code != exitError || !strings.Contains(stdout.String(), "sent SIGKILL: 101 a") || !strings.Contains(stderr.String(), "input/output error") {
 		t.Errorf("pickFailed = %d, stdout %q, stderr %q; want %d with the earlier report and the error", code, stdout.String(), stderr.String(), exitError)
 	}
@@ -271,21 +269,21 @@ func TestFailureAfterAPartialEnterDoesNotClaimNothingWasSignalled(t *testing.T) 
 		}
 		b.sent += len(batch)
 	})
-	var cmd tea.Cmd
-	for _, msg := range []tea.Msg{
-		tea.WindowSizeMsg{Width: 80, Height: 24},
+	var cmd ui.Cmd
+	for _, msg := range []ui.Msg{
+		ui.WindowSizeMsg{Width: 80, Height: 24},
 		m.Init()(), // the first frame is drawn
-		tea.KeyPressMsg{Code: 'a', Mod: tea.ModAlt},
-		tea.WindowSizeMsg{Width: 80, Height: 10},
-		tea.KeyPressMsg{Code: tea.KeyEnter},
-		tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl},
+		ui.KeyPressMsg{Code: 'a', Mod: ui.ModAlt},
+		ui.WindowSizeMsg{Width: 80, Height: 10},
+		ui.KeyPressMsg{Code: ui.KeyEnter},
+		ui.KeyPressMsg{Code: 'r', Mod: ui.ModCtrl},
 	} {
-		var next tea.Model
+		var next ui.Model
 		next, cmd = m.Update(msg)
-		m = next.(ui.Model)
+		m = next
 	}
 	next, _ := m.Update(cmd())
-	m = next.(ui.Model)
+	m = next
 	if m.Outcome() != ui.ListFailed {
 		t.Fatalf("Outcome() = %v, want ListFailed", m.Outcome())
 	}
@@ -307,7 +305,7 @@ func TestHeldReportsKeepTheirOrder(t *testing.T) {
 	reportln(b.stderr(), "skipped: process changed or exited: 102 b")
 	reportln(b.stdout(), "sent SIGKILL: 103 c")
 	var both bytes.Buffer
-	pickFailed(&b, errors.New("picker failed"), &both, &both)
+	pickFailed(&b, errors.New("picker failed"), &both, &both, nil)
 	want := "sent SIGKILL: 101 a\nskipped: process changed or exited: 102 b\nsent SIGKILL: 103 c\nkil: picker failed\n"
 	if both.String() != want {
 		t.Errorf("output = %q, want %q", both.String(), want)
@@ -325,5 +323,22 @@ func TestHelpWriteErrorFails(t *testing.T) {
 	code := run([]string{"--help"}, func(string) string { return "" }, failingWriter{}, &stderr)
 	if code != exitError || !strings.Contains(stderr.String(), "no space left on device") {
 		t.Errorf("kil --help to a full disk = %d, stderr %q; want %d and the error", code, stderr.String(), exitError)
+	}
+}
+
+// Without TERM, or with TERM=dumb, the terminal may not show colors, so kil
+// draws without them, as it did before it used tcell.
+func TestScreenWithoutAKnownTermHasNoColors(t *testing.T) {
+	for _, tt := range []struct {
+		term       string
+		monochrome bool
+	}{{"", true}, {"dumb", true}, {"xterm-256color", false}, {"kil-unknown-term", false}} {
+		s, err := newScreen(tt.term)
+		if err != nil {
+			t.Fatalf("TERM=%s: %v", tt.term, err)
+		}
+		if _, ok := s.(monochrome); ok != tt.monochrome {
+			t.Errorf("TERM=%s: monochrome %v, want %v", tt.term, ok, tt.monochrome)
+		}
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/oooooooo/kil/internal/picker"
@@ -27,30 +26,30 @@ func plain(view string) string { return ansi.Strip(view) }
 
 func noReload() ([]picker.Item, error) { return nil, nil }
 
-func press(m Model, keys ...tea.Msg) (Model, tea.Cmd) {
-	var cmd tea.Cmd
+func press(m Model, keys ...Msg) (Model, Cmd) {
+	var cmd Cmd
 	for _, k := range keys {
-		var next tea.Model
+		var next Model
 		next, cmd = m.Update(k)
-		m = next.(Model)
+		m = next
 	}
 	return m, cmd
 }
 
-func typed(s string) tea.KeyPressMsg {
-	return tea.KeyPressMsg{Code: []rune(s)[0], Text: s}
+func typed(s string) KeyPressMsg {
+	return KeyPressMsg{Code: []rune(s)[0], Text: s}
 }
 
-func alt(r rune) tea.KeyPressMsg {
-	return tea.KeyPressMsg{Code: r, Mod: tea.ModAlt}
+func alt(r rune) KeyPressMsg {
+	return KeyPressMsg{Code: r, Mod: ModAlt}
 }
 
-func ctrl(r rune) tea.KeyPressMsg {
-	return tea.KeyPressMsg{Code: r, Mod: tea.ModCtrl}
+func ctrl(r rune) KeyPressMsg {
+	return KeyPressMsg{Code: r, Mod: ModCtrl}
 }
 
-func key(code rune, mods ...tea.KeyMod) tea.KeyPressMsg {
-	k := tea.KeyPressMsg{Code: code}
+func key(code rune, mods ...KeyMod) KeyPressMsg {
+	k := KeyPressMsg{Code: code}
 	for _, mod := range mods {
 		k.Mod |= mod
 	}
@@ -61,8 +60,8 @@ func sized(m Model) Model {
 	return drawn(m, 80, 20)
 }
 
-// drawn returns m on a terminal of the given size, after Bubble Tea has drawn
-// it, so that Enter does not wait for rows to reach the terminal.
+// drawn returns m on a terminal of the given size, after the user has had
+// time to see it, so that Enter does not wait for rows to be seen.
 func drawn(m Model, width, height int) Model {
 	return settled(resized(m, width, height))
 }
@@ -93,7 +92,7 @@ func TestInitialQueryIsApplied(t *testing.T) {
 
 func TestBackspaceAndCtrlUEditTheQuery(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", noReload))
-	m, _ = press(m, typed("pyx"), key(tea.KeyBackspace))
+	m, _ = press(m, typed("pyx"), key(KeyBackspace))
 	if m.Query() != "py" {
 		t.Errorf("Query() after backspace = %q, want \"py\"", m.Query())
 	}
@@ -105,7 +104,7 @@ func TestBackspaceAndCtrlUEditTheQuery(t *testing.T) {
 
 func TestSelectionStaysVisibleAfterQueryChange(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b"), "node", "SIGKILL", noReload))
-	m, _ = press(m, key(tea.KeyTab), ctrl('u'), typed("python"))
+	m, _ = press(m, key(KeyTab), ctrl('u'), typed("python"))
 	view := plain(m.render())
 	if !strings.Contains(view, "101 node a") {
 		t.Errorf("selected node row is not shown after changing the query:\n%s", view)
@@ -114,7 +113,7 @@ func TestSelectionStaysVisibleAfterQueryChange(t *testing.T) {
 
 func TestEnterAcceptsTargets(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", noReload))
-	m, cmd := press(m, key(tea.KeyUp), key(tea.KeyEnter))
+	m, cmd := press(m, key(KeyUp), key(KeyEnter))
 	if m.Outcome() != Accepted {
 		t.Fatalf("Outcome() = %v, want Accepted", m.Outcome())
 	}
@@ -128,14 +127,14 @@ func TestEnterAcceptsTargets(t *testing.T) {
 
 func TestEnterWithNothingShownSelectsNothing(t *testing.T) {
 	m := sized(New(items("101 node a"), "zzz", "SIGKILL", noReload))
-	m, _ = press(m, key(tea.KeyEnter))
+	m, _ = press(m, key(KeyEnter))
 	if m.Outcome() != NothingSelected {
 		t.Errorf("Outcome() = %v, want NothingSelected", m.Outcome())
 	}
 }
 
 func TestEscAndCtrlCAbort(t *testing.T) {
-	for _, k := range []tea.KeyPressMsg{key(tea.KeyEscape), ctrl('c')} {
+	for _, k := range []KeyPressMsg{key(KeyEscape), ctrl('c')} {
 		m := sized(New(items("101 node a"), "", "SIGKILL", noReload))
 		m, _ = press(m, k)
 		if m.Outcome() != Aborted {
@@ -149,7 +148,7 @@ func TestEscAndCtrlCAbort(t *testing.T) {
 
 func TestAltASelectsEveryShownRow(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b", "203 python c"), "python", "SIGKILL", noReload))
-	m, _ = press(m, alt('a'), key(tea.KeyEnter))
+	m, _ = press(m, alt('a'), key(KeyEnter))
 	if got := targetTexts(m); !slices.Equal(got, []string{"202 python b", "203 python c"}) {
 		t.Errorf("Targets() = %v", got)
 	}
@@ -163,7 +162,7 @@ func TestCtrlRReloadsTheList(t *testing.T) {
 		t.Fatal("Ctrl-R returned no command")
 	}
 	next, _ := m.Update(cmd())
-	m = next.(Model)
+	m = next
 	if !strings.Contains(plain(m.render()), "404 go d") {
 		t.Errorf("reloaded row not shown:\n%s", plain(m.render()))
 	}
@@ -172,10 +171,10 @@ func TestCtrlRReloadsTheList(t *testing.T) {
 func TestFailedReloadEndsWithoutTargets(t *testing.T) {
 	reload := func() ([]picker.Item, error) { return nil, errors.New("ps failed") }
 	m := sized(New(items("101 node a"), "", "SIGKILL", reload))
-	m, _ = press(m, key(tea.KeyTab))
+	m, _ = press(m, key(KeyTab))
 	m, cmd := press(m, ctrl('r'))
 	next, quit := m.Update(cmd())
-	m = next.(Model)
+	m = next
 	if m.Outcome() != ListFailed || m.Err() == nil {
 		t.Errorf("Outcome() = %v, Err() = %v; want ListFailed and an error", m.Outcome(), m.Err())
 	}
@@ -216,7 +215,7 @@ func TestAltHShowsHelpNamingTheSignal(t *testing.T) {
 // one; any key only closes the help.
 func TestKeyWhileHelpIsShownOnlyClosesIt(t *testing.T) {
 	m := sized(New(items("101 node a"), "", "SIGKILL", noReload))
-	m, _ = press(m, alt('h'), key(tea.KeyEnter))
+	m, _ = press(m, alt('h'), key(KeyEnter))
 	if m.Outcome() != Running {
 		t.Errorf("Enter with the help shown: Outcome() = %v, want Running", m.Outcome())
 	}
@@ -229,7 +228,7 @@ func TestKeyWhileHelpIsShownOnlyClosesIt(t *testing.T) {
 // programs; Ctrl-C still aborts.
 func TestEscWhileHelpIsShownClosesIt(t *testing.T) {
 	m := sized(New(items("101 node a"), "", "SIGKILL", noReload))
-	m, _ = press(m, alt('h'), key(tea.KeyEsc))
+	m, _ = press(m, alt('h'), key(KeyEsc))
 	if m.Outcome() != Running {
 		t.Errorf("Esc with the help shown: Outcome() = %v, want Running", m.Outcome())
 	}
@@ -253,7 +252,7 @@ func TestViewScrollsToKeepTheCursorVisible(t *testing.T) {
 	}
 	m := sized(New(items(lines...), "", "SIGKILL", noReload))
 	for range 40 {
-		m, _ = press(m, key(tea.KeyUp))
+		m, _ = press(m, key(KeyUp))
 	}
 	view := plain(m.render())
 	if !strings.Contains(view, lines[40]) {
@@ -271,7 +270,7 @@ func TestMovingBackInsideTheWindowDoesNotScroll(t *testing.T) {
 	}
 	m := sized(New(items(lines...), "", "SIGKILL", noReload))
 	for range 40 {
-		m, _ = press(m, key(tea.KeyUp))
+		m, _ = press(m, key(KeyUp))
 	}
 	// Rows grow upward from the header, so the window's topmost row is the
 	// first non-blank line.
@@ -284,7 +283,7 @@ func TestMovingBackInsideTheWindowDoesNotScroll(t *testing.T) {
 		return ""
 	}
 	before := firstRow(m)
-	m, _ = press(m, key(tea.KeyDown))
+	m, _ = press(m, key(KeyDown))
 	if after := firstRow(m); after != before {
 		t.Errorf("first row changed from %q to %q after moving back inside the window", before, after)
 	}
@@ -315,7 +314,7 @@ func TestLayoutMatchesFzf(t *testing.T) {
 
 func TestSelectedRowShowsMarker(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", noReload))
-	m, _ = press(m, key(tea.KeyTab))
+	m, _ = press(m, key(KeyTab))
 	view := plain(m.render())
 	if !strings.Contains(view, "▌┃101 node a") {
 		t.Errorf("selected row has no ┃ marker:\n%s", view)
@@ -409,10 +408,10 @@ func TestWidthsIgnoreEastAsianLocale(t *testing.T) {
 // the next match, and Tab toggles and then moves down, toward the best.
 func TestKeysMoveAsInFzfDefaultLayout(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b", "303 ruby c"), "", "SIGKILL", noReload))
-	m, _ = press(m, key(tea.KeyUp), key(tea.KeyUp)) // ruby
-	m, _ = press(m, key(tea.KeyTab))                // select ruby, move down to python
-	m, _ = press(m, key(tea.KeyTab, tea.ModShift))  // select python, move up
-	m, _ = press(m, key(tea.KeyEnter))
+	m, _ = press(m, key(KeyUp), key(KeyUp)) // ruby
+	m, _ = press(m, key(KeyTab))            // select ruby, move down to python
+	m, _ = press(m, key(KeyTab, ModShift))  // select python, move up
+	m, _ = press(m, key(KeyEnter))
 	// Targets come in the order they were selected.
 	if got := targetTexts(m); !slices.Equal(got, []string{"303 ruby c", "202 python b"}) {
 		t.Errorf("Targets() = %v, want ruby, then python", got)
@@ -421,7 +420,7 @@ func TestKeysMoveAsInFzfDefaultLayout(t *testing.T) {
 
 func TestTabMovesDownTowardTheBestMatch(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", noReload))
-	m, _ = press(m, key(tea.KeyUp), key(tea.KeyTab), key(tea.KeyTab), key(tea.KeyEnter))
+	m, _ = press(m, key(KeyUp), key(KeyTab), key(KeyTab), key(KeyEnter))
 	if got := targetTexts(m); !slices.Equal(got, []string{"202 python b", "101 node a"}) {
 		t.Errorf("Targets() = %v, want python, then node, as selected", got)
 	}
@@ -448,7 +447,7 @@ func TestShiftedLineShowsAShortTail(t *testing.T) {
 	}
 }
 
-func editing(t *testing.T, want string, keys ...tea.Msg) {
+func editing(t *testing.T, want string, keys ...Msg) {
 	t.Helper()
 	m := sized(New(items("101 ruby a"), "", "SIGKILL", noReload))
 	m, _ = press(m, keys...)
@@ -458,18 +457,18 @@ func editing(t *testing.T, want string, keys ...tea.Msg) {
 }
 
 func TestLineEditingKeys(t *testing.T) {
-	left, right := key(tea.KeyLeft), key(tea.KeyRight)
+	left, right := key(KeyLeft), key(KeyRight)
 	t.Run("Ctrl-A moves to the start", func(t *testing.T) {
 		editing(t, "ruby", typed("uby"), ctrl('a'), typed("r"))
 	})
 	t.Run("Home moves to the start", func(t *testing.T) {
-		editing(t, "ruby", typed("uby"), key(tea.KeyHome), typed("r"))
+		editing(t, "ruby", typed("uby"), key(KeyHome), typed("r"))
 	})
 	t.Run("Ctrl-E moves to the end", func(t *testing.T) {
 		editing(t, "ruby", typed("rub"), ctrl('a'), ctrl('e'), typed("y"))
 	})
 	t.Run("End moves to the end", func(t *testing.T) {
-		editing(t, "ruby", typed("rub"), key(tea.KeyHome), key(tea.KeyEnd), typed("y"))
+		editing(t, "ruby", typed("rub"), key(KeyHome), key(KeyEnd), typed("y"))
 	})
 	t.Run("Left and Right move by a character", func(t *testing.T) {
 		editing(t, "ruby", typed("ry"), left, left, right, typed("ub"))
@@ -493,10 +492,10 @@ func TestLineEditingKeys(t *testing.T) {
 		editing(t, "node ", typed("node ruby"), ctrl('w'))
 	})
 	t.Run("Backspace deletes before the cursor", func(t *testing.T) {
-		editing(t, "ruby", typed("rubby"), left, left, key(tea.KeyBackspace))
+		editing(t, "ruby", typed("rubby"), left, left, key(KeyBackspace))
 	})
 	t.Run("Delete deletes at the cursor", func(t *testing.T) {
-		editing(t, "ruby", typed("ruxby"), left, left, left, key(tea.KeyDelete))
+		editing(t, "ruby", typed("ruxby"), left, left, left, key(KeyDelete))
 	})
 	t.Run("typing inserts at the cursor", func(t *testing.T) {
 		editing(t, "ruby", typed("rby"), ctrl('a'), right, typed("u"))
@@ -556,7 +555,7 @@ func TestAltATogglesEveryShownRow(t *testing.T) {
 func TestPinnedRowKeepsTheLeadingColumns(t *testing.T) {
 	long := "  101     1 alice    node            " + strings.Repeat("x", 100) + " needle"
 	m := sized(New(items(long, "  202     1 bob      sleep           sleep 60"), "", "SIGKILL", noReload))
-	m, _ = press(m, key(tea.KeyTab), typed("'needle"))
+	m, _ = press(m, key(KeyTab), typed("'needle"))
 	if !strings.Contains(plain(m.render()), "┃  101     1 alice    node            ··") {
 		t.Errorf("pinned row lost its leading columns:\n%s", plain(m.render()))
 	}
@@ -566,8 +565,8 @@ func TestPinnedRowKeepsTheLeadingColumns(t *testing.T) {
 // right instead.
 func TestNarrowScreenCutsOnTheRight(t *testing.T) {
 	long := "  101     1 alice    node            " + strings.Repeat("x", 100) + " needle"
-	next, _ := New(items(long), "'needle", "SIGKILL", noReload).Update(tea.WindowSizeMsg{Width: 30, Height: 10})
-	m := next.(Model)
+	next, _ := New(items(long), "'needle", "SIGKILL", noReload).Update(WindowSizeMsg{Width: 30, Height: 10})
+	m := next
 	row := viewLines(m)[len(viewLines(m))-4]
 	if !strings.HasPrefix(row, "▌   101     1 alice") || ansi.StringWidth(row) > 30 {
 		t.Errorf("narrow row = %q, want the leading columns cut to 30 columns", row)
@@ -575,8 +574,8 @@ func TestNarrowScreenCutsOnTheRight(t *testing.T) {
 }
 
 func resized(m Model, width, height int) Model {
-	next, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height})
-	return next.(Model)
+	next, _ := m.Update(WindowSizeMsg{Width: width, Height: height})
+	return next
 }
 
 func numberedLines(n int) []string {
@@ -593,7 +592,7 @@ func TestGrowingTheTerminalShowsEveryRowThatFits(t *testing.T) {
 	lines := numberedLines(30)
 	m := drawn(New(items(lines...), "", "SIGKILL", noReload), 80, 8)
 	for range 25 {
-		m, _ = press(m, key(tea.KeyUp))
+		m, _ = press(m, key(KeyUp))
 	}
 	m = resized(m, 80, 40)
 	view := plain(m.render())
@@ -604,8 +603,8 @@ func TestGrowingTheTerminalShowsEveryRowThatFits(t *testing.T) {
 	}
 }
 
-// Bubble Tea drops the lines above the terminal's height, so on a tiny
-// terminal the view must fit, keeping the cursor row and the prompt.
+// Lines below the terminal's height are not drawn, so on a tiny terminal
+// the view must fit, keeping the cursor row and the prompt.
 func TestTinyTerminalKeepsTheCursorRowVisible(t *testing.T) {
 	for _, height := range []int{2, 3} {
 		m := drawn(New(items("101 node a"), "", "SIGKILL", noReload), 80, height)
@@ -623,7 +622,7 @@ func TestTinyTerminalKeepsTheCursorRowVisible(t *testing.T) {
 // signal one.
 func TestEnterDoesNothingWithoutRoomForRows(t *testing.T) {
 	m := drawn(New(items("101 node a"), "", "SIGKILL", noReload), 80, 1)
-	m, cmd := press(m, key(tea.KeyEnter))
+	m, cmd := press(m, key(KeyEnter))
 	if m.Outcome() != Running || cmd != nil {
 		t.Errorf("Enter on a one-line terminal: Outcome() = %v, want Running and no command", m.Outcome())
 	}
@@ -634,7 +633,7 @@ func TestEnterDoesNothingWithoutRoomForRows(t *testing.T) {
 // between pasted words means.
 func TestPastedControlCharactersBecomeSpaces(t *testing.T) {
 	m := sized(New(items("101 node a"), "", "SIGKILL", noReload))
-	m, _ = press(m, tea.PasteMsg{Content: "node\r\npy\x1b[31m"})
+	m, _ = press(m, PasteMsg{Content: "node\r\npy\x1b[31m"})
 	if got := m.Query(); got != "node  py [31m" {
 		t.Errorf("Query() = %q, want control characters replaced with spaces", got)
 	}
@@ -679,7 +678,7 @@ func TestOneLineTerminalDrawsOnlyThePrompt(t *testing.T) {
 	for _, n := range []int{1, 5} {
 		m := drawn(New(items(numberedLines(n)...), "", "SIGKILL", noReload), 80, 1)
 		for range n {
-			m, _ = press(m, key(tea.KeyUp))
+			m, _ = press(m, key(KeyUp))
 		}
 		lines := viewLines(m)
 		if len(lines) != 1 || !strings.HasPrefix(lines[0], ">") {
@@ -693,9 +692,9 @@ func TestOneLineTerminalDrawsOnlyThePrompt(t *testing.T) {
 func TestInfoLineCountsKeptSelectionsInTheTotal(t *testing.T) {
 	reload := func() ([]picker.Item, error) { return items("202 python b"), nil }
 	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", reload))
-	m, cmd := press(m, key(tea.KeyTab), ctrl('r'))
+	m, cmd := press(m, key(KeyTab), ctrl('r'))
 	next, _ := m.Update(cmd())
-	m = next.(Model)
+	m = next
 	if !strings.Contains(plain(m.render()), "2/2 (1)") {
 		t.Errorf("info line after the selected process exited, want \"2/2 (1)\":\n%s", plain(m.render()))
 	}
@@ -756,7 +755,7 @@ func TestHelpSeparatesKeysFromTheQuerySyntax(t *testing.T) {
 // rows drawn on screen, not every match.
 func TestAltASelectsOnlyTheRowsOnScreen(t *testing.T) {
 	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload), 80, 24)
-	m, _ = press(m, alt('a'), key(tea.KeyEnter))
+	m, _ = press(m, alt('a'), key(KeyEnter))
 	view := plain(m.render())
 	for _, target := range targetTexts(m) {
 		if !strings.Contains(view, target) {
@@ -794,7 +793,7 @@ func offscreenSelections(r *recorder) Model {
 func TestAltAKeepsTheRowsItSelectedOnScreen(t *testing.T) {
 	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload), 80, 24)
 	for range 29 {
-		m, _ = press(m, key(tea.KeyUp))
+		m, _ = press(m, key(KeyUp))
 	}
 	m, _ = press(m, alt('a'))
 	view := plain(m.render())
@@ -816,7 +815,7 @@ func TestEnterSignalsOnlyTheSelectedRowsOnScreen(t *testing.T) {
 	var r recorder
 	m := offscreenSelections(&r)
 	before := plain(m.render())
-	m, _ = press(m, key(tea.KeyEnter))
+	m, _ = press(m, key(KeyEnter))
 	if m.Outcome() != Running {
 		t.Fatalf("Enter with selections off screen: Outcome() = %v, want Running", m.Outcome())
 	}
@@ -846,7 +845,7 @@ func TestEnterRepeatedSignalsEverySelectionOnce(t *testing.T) {
 	for range 10 {
 		m = settled(m)
 		view := plain(m.render())
-		m, _ = press(m, key(tea.KeyEnter))
+		m, _ = press(m, key(KeyEnter))
 		var batch []string
 		if m.Outcome() == Accepted {
 			batch = targetTexts(m)
@@ -872,7 +871,7 @@ func TestEnterRepeatedSignalsEverySelectionOnce(t *testing.T) {
 func partlySent(t *testing.T) Model {
 	t.Helper()
 	var r recorder
-	m, _ := press(offscreenSelections(&r), key(tea.KeyEnter))
+	m, _ := press(offscreenSelections(&r), key(KeyEnter))
 	if m.Outcome() != Running {
 		t.Fatalf("Outcome() = %v after a partial Enter, want Running", m.Outcome())
 	}
@@ -882,12 +881,12 @@ func partlySent(t *testing.T) Model {
 // After a partial Enter, leaving with Esc would leave chosen processes
 // running, so kil asks first.
 func TestEscAfterAPartialEnterAsks(t *testing.T) {
-	m, cmd := press(partlySent(t), key(tea.KeyEsc))
+	m, cmd := press(partlySent(t), key(KeyEsc))
 	if m.Outcome() != Running || cmd != nil || !strings.Contains(plain(m.render()), "[Y/n]") {
 		t.Fatalf("Esc after a partial Enter: Outcome() = %v, want Running and a [Y/n] question:\n%s", m.Outcome(), plain(m.render()))
 	}
-	for _, k := range []tea.KeyPressMsg{typed("y"), typed("Y"), key(tea.KeyEnter)} {
-		m, _ := press(partlySent(t), key(tea.KeyEsc), k)
+	for _, k := range []KeyPressMsg{typed("y"), typed("Y"), key(KeyEnter)} {
+		m, _ := press(partlySent(t), key(KeyEsc), k)
 		if m.Outcome() != Stopped || len(m.Left()) == 0 {
 			t.Errorf("%v: Outcome() = %v, Left() = %v; want Stopped with the selections left", k, m.Outcome(), m.Left())
 		}
@@ -897,7 +896,7 @@ func TestEscAfterAPartialEnterAsks(t *testing.T) {
 func TestNoKeepsKilOpenWithTheSelections(t *testing.T) {
 	m := partlySent(t)
 	selected := m.picker.SelectedCount()
-	m, cmd := press(m, key(tea.KeyEsc), typed("n"))
+	m, cmd := press(m, key(KeyEsc), typed("n"))
 	if m.Outcome() != Running || cmd != nil || m.picker.SelectedCount() != selected {
 		t.Errorf("n: Outcome() = %v, SelectedCount() = %d; want Running with %d selected", m.Outcome(), m.picker.SelectedCount(), selected)
 	}
@@ -913,16 +912,16 @@ func TestCtrlCAfterAPartialEnterAbortsWithoutAsking(t *testing.T) {
 	}
 }
 
-// Bubble Tea draws asynchronously, so an Enter typed right after a partial
-// Enter can arrive before the rows it would signal are on the terminal.
+// An Enter typed right after a partial Enter can arrive before the user has
+// seen the rows it would signal.
 // Enter waits until the list has settled.
 func TestEnterRightAfterAPartialEnterWaits(t *testing.T) {
 	var r recorder
-	m, _ := press(offscreenSelections(&r), key(tea.KeyEnter), key(tea.KeyEnter))
+	m, _ := press(offscreenSelections(&r), key(KeyEnter), key(KeyEnter))
 	if len(r.sent) != 1 || m.Outcome() != Running {
 		t.Fatalf("second Enter before the list settled: sent %d batches, Outcome() = %v; want 1 and Running", len(r.sent), m.Outcome())
 	}
-	m, _ = press(settled(m), key(tea.KeyEnter))
+	m, _ = press(settled(m), key(KeyEnter))
 	if len(r.sent) != 2 && m.Outcome() != Accepted {
 		t.Errorf("Enter after the list settled did nothing: sent %d batches, Outcome() = %v", len(r.sent), m.Outcome())
 	}
@@ -933,15 +932,15 @@ func TestEnterRightAfterAPartialEnterWaits(t *testing.T) {
 func TestEnterBringsSelectionsOnScreenWhenNoneAreShown(t *testing.T) {
 	var r recorder
 	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload).WithSender(r.send), 80, 10)
-	m, _ = press(m, key(tea.KeyTab))
+	m, _ = press(m, key(KeyTab))
 	for range 30 {
-		m, _ = press(m, key(tea.KeyUp))
+		m, _ = press(m, key(KeyUp))
 	}
-	m, _ = press(m, key(tea.KeyEnter))
+	m, _ = press(m, key(KeyEnter))
 	if !strings.Contains(plain(m.render()), "▌┃100 proc") && !strings.Contains(plain(m.render()), "┃100 proc") {
 		t.Fatalf("selected row not brought on screen:\n%s", plain(m.render()))
 	}
-	m, _ = press(settled(m), key(tea.KeyEnter))
+	m, _ = press(settled(m), key(KeyEnter))
 	if m.Outcome() != Accepted || !slices.Equal(targetTexts(m), []string{"100 proc"}) {
 		t.Errorf("Enter with the selection on screen: Outcome() = %v, Targets() = %v", m.Outcome(), targetTexts(m))
 	}
@@ -954,9 +953,9 @@ func TestAltAShowsTheRowsItJustSelected(t *testing.T) {
 	m, _ = press(m, alt('a'))
 	m = resized(m, 80, 8)
 	for range 10 {
-		m, _ = press(m, key(tea.KeyUp))
+		m, _ = press(m, key(KeyUp))
 	}
-	m, _ = press(m, key(tea.KeyDown), key(tea.KeyDown), key(tea.KeyDown))
+	m, _ = press(m, key(KeyDown), key(KeyDown), key(KeyDown))
 	was := map[string]bool{}
 	for _, r := range m.picker.Rows() {
 		was[r.Item.Text] = r.Selected
@@ -987,47 +986,48 @@ func TestAltAShowsTheRowsItJustSelected(t *testing.T) {
 // screen changed.
 func settled(m Model) Model {
 	next, _ := m.Update(settledMsg{gen: m.settleGen})
-	return next.(Model)
+	return next
 }
 
-// Bubble Tea keeps delivering keys until it has quit, so a key typed after
-// the outcome is decided must not change it or signal anything.
+// A message handled after the outcome is decided must not change it or
+// signal anything.
 func TestKeysAfterTheOutcomeIsDecidedAreIgnored(t *testing.T) {
 	var r recorder
-	m, _ := press(offscreenSelections(&r), ctrl('c'), key(tea.KeyEnter))
+	m, _ := press(offscreenSelections(&r), ctrl('c'), key(KeyEnter))
 	if m.Outcome() != Aborted || len(r.sent) != 0 {
 		t.Errorf("Ctrl-C then Enter: Outcome() = %v, sent %v; want Aborted and nothing sent", m.Outcome(), r.sent)
 	}
 
 	r = recorder{}
 	m = drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload).WithSender(r.send), 80, 24)
-	m, _ = press(m, key(tea.KeyTab), key(tea.KeyEnter))
+	m, _ = press(m, key(KeyTab), key(KeyEnter))
 	targets := targetTexts(m)
-	m, _ = press(m, key(tea.KeyUp), key(tea.KeyTab), key(tea.KeyEnter))
+	m, _ = press(m, key(KeyUp), key(KeyTab), key(KeyEnter))
 	if m.Outcome() != Accepted || !slices.Equal(targetTexts(m), targets) || len(r.sent) != 0 {
 		t.Errorf("keys after Enter: Outcome() = %v, Targets() = %v, sent %v; want Accepted with %v and nothing sent", m.Outcome(), targetTexts(m), r.sent, targets)
 	}
 }
 
-// Bubble Tea draws asynchronously, so selected rows that have just come on
-// screen may not be on the terminal yet. Enter waits after any change that
+// Selected rows that have just come on screen may not have been seen yet,
+// as keys typed ahead arrive before the user sees the frames drawn between
+// them. Enter waits after any change that
 // brings selections on screen, not only after a partial Enter.
 func TestEnterRightAfterSelectionsComeOnScreenWaits(t *testing.T) {
 	bring := map[string]func(Model) Model{
 		"closing the help": func(m Model) Model {
-			m, _ = press(m, alt('h'), key(tea.KeyEsc))
+			m, _ = press(m, alt('h'), key(KeyEsc))
 			return m
 		},
 		"scrolling": func(m Model) Model {
 			for range 30 {
-				m, _ = press(m, key(tea.KeyDown))
+				m, _ = press(m, key(KeyDown))
 			}
 			return m
 		},
 		"growing the terminal": func(m Model) Model { return resized(m, 80, 24) },
-		// After fg, Bubble Tea draws the whole screen again.
+		// After fg, Run draws the whole screen again.
 		"resuming after Ctrl-Z": func(m Model) Model {
-			m, _ = press(m, tea.ResumeMsg{})
+			m, _ = press(m, ResumeMsg{})
 			return m
 		},
 	}
@@ -1036,16 +1036,16 @@ func TestEnterRightAfterSelectionsComeOnScreenWaits(t *testing.T) {
 		m := settled(partlySent(t))
 		if name == "scrolling" {
 			for range 30 {
-				m, _ = press(m, key(tea.KeyUp))
+				m, _ = press(m, key(KeyUp))
 			}
 		}
 		m = settled(m)
 		before := len(r.sent)
-		m, _ = press(f(m).WithSender(r.send), key(tea.KeyEnter))
+		m, _ = press(f(m).WithSender(r.send), key(KeyEnter))
 		if len(r.sent) != before || m.Outcome() != Running {
 			t.Errorf("Enter right after %s: sent %v, Outcome() = %v; want nothing sent and Running", name, r.sent, m.Outcome())
 		}
-		m, _ = press(settled(m), key(tea.KeyEnter))
+		m, _ = press(settled(m), key(KeyEnter))
 		if len(r.sent) == before && m.Outcome() == Running {
 			t.Errorf("Enter after %s settled did nothing", name)
 		}
@@ -1059,7 +1059,7 @@ func TestZeroTerminalSizeKeepsTheDefaultSize(t *testing.T) {
 	if !strings.Contains(plain(m.render()), "101 node a") {
 		t.Errorf("row not drawn with a 0x0 size:\n%s", plain(m.render()))
 	}
-	m, _ = press(m, key(tea.KeyEnter))
+	m, _ = press(m, key(KeyEnter))
 	if m.Outcome() != Accepted {
 		t.Errorf("Enter with a 0x0 size: Outcome() = %v, want Accepted", m.Outcome())
 	}
@@ -1068,7 +1068,7 @@ func TestZeroTerminalSizeKeepsTheDefaultSize(t *testing.T) {
 // Enter answers the question, so its answers must stay on screen however
 // narrow the terminal is.
 func TestNarrowTerminalKeepsTheAnswersOfTheQuestion(t *testing.T) {
-	m, _ := press(partlySent(t), key(tea.KeyEsc))
+	m, _ := press(partlySent(t), key(KeyEsc))
 	for _, width := range []int{80, 30, 12, 6} {
 		m = resized(m, width, 10)
 		if prompt := plain(promptLine(m)); !strings.Contains(prompt, "[Y/n]") || ansi.StringWidth(prompt) > width {
@@ -1082,24 +1082,24 @@ func TestNarrowTerminalKeepsTheAnswersOfTheQuestion(t *testing.T) {
 func TestEnterRightAfterSelectingRowsJustOnScreenWaits(t *testing.T) {
 	var r recorder
 	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload).WithSender(r.send), 80, 5)
-	m, _ = press(m, alt('a'), key(tea.KeyUp), key(tea.KeyUp), key(tea.KeyUp))
+	m, _ = press(m, alt('a'), key(KeyUp), key(KeyUp), key(KeyUp))
 	m = settled(m)
-	m, _ = press(m, key(tea.KeyUp), alt('a'), key(tea.KeyEnter))
+	m, _ = press(m, key(KeyUp), alt('a'), key(KeyEnter))
 	if len(r.sent) != 0 || m.Outcome() != Running {
 		t.Fatalf("Enter right after selecting rows just on screen: sent %v, Outcome() = %v; want nothing sent and Running", r.sent, m.Outcome())
 	}
-	m, _ = press(settled(m), key(tea.KeyEnter))
+	m, _ = press(settled(m), key(KeyEnter))
 	if len(r.sent) == 0 && m.Outcome() == Running {
 		t.Error("Enter after the rows settled did nothing")
 	}
 }
 
-// Bubble Tea draws with each dimension it is given, so kil keeps only the
-// dimension reported as 0, not both.
+// Each dimension is drawn as it is given, so kil keeps only the dimension
+// reported as 0, not both.
 func TestOneZeroDimensionStillApplies(t *testing.T) {
 	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload), 80, 24)
 	m, _ = press(m, alt('a'))
-	m, _ = press(resized(m, 0, 1), key(tea.KeyEnter))
+	m, _ = press(resized(m, 0, 1), key(KeyEnter))
 	if m.Outcome() != Running {
 		t.Errorf("Enter on a 1-line terminal reported as 0x1: Outcome() = %v, want Running", m.Outcome())
 	}
@@ -1108,8 +1108,8 @@ func TestOneZeroDimensionStillApplies(t *testing.T) {
 	}
 }
 
-// Nothing is on the terminal until Bubble Tea draws the first frame, so the
-// rows kil starts with count as just come on screen.
+// Nothing has been seen before the first frame, so the rows kil starts with
+// count as just come on screen.
 func TestEnterRightAfterStartWaits(t *testing.T) {
 	var r recorder
 	m := New(items(numberedLines(30)...), "", "SIGKILL", noReload).WithSender(r.send)
@@ -1117,11 +1117,11 @@ func TestEnterRightAfterStartWaits(t *testing.T) {
 		t.Error("Init() starts no wait for the first frame")
 	}
 	m, _ = press(m, alt('a'))
-	m, _ = press(resized(m, 80, 5), key(tea.KeyEnter))
+	m, _ = press(resized(m, 80, 5), key(KeyEnter))
 	if len(r.sent) != 0 || m.Outcome() != Running {
 		t.Fatalf("Enter before the first frame: sent %v, Outcome() = %v; want nothing sent and Running", r.sent, m.Outcome())
 	}
-	m, _ = press(settled(m), key(tea.KeyEnter))
+	m, _ = press(settled(m), key(KeyEnter))
 	if len(r.sent) == 0 && m.Outcome() == Running {
 		t.Error("Enter after the first frame did nothing")
 	}
@@ -1138,17 +1138,17 @@ func TestEachRowWaitsOnlyForItself(t *testing.T) {
 	}
 	m := drawn(New(items("100 proc", "200 proc"), "", "SIGKILL", reload).WithSender(r.send), 80, 6)
 	m = settled(m)
-	m, _ = press(m, key(tea.KeyTab))
+	m, _ = press(m, key(KeyTab))
 	m = resized(resized(m, 80, 1), 80, 6)
 	selectedGen := m.settleGen
 	m, cmd := press(m, ctrl('r'))
 	nm, _ := m.Update(cmd())
-	m = nm.(Model)
+	m = nm
 	if m.settleGen == selectedGen {
 		t.Fatalf("the reloaded row started no wait:\n%s", plain(m.render()))
 	}
 	nm, _ = m.Update(settledMsg{gen: selectedGen})
-	m, _ = press(nm.(Model), key(tea.KeyEnter))
+	m, _ = press(nm, key(KeyEnter))
 	if m.Outcome() != Accepted || !slices.Equal(targetTexts(m), []string{"100 proc"}) {
 		t.Errorf("Enter after the selected row's wait ended: Outcome() = %v, Targets() = %v; want Accepted with 100 proc", m.Outcome(), targetTexts(m))
 	}
@@ -1159,11 +1159,11 @@ func TestEachRowWaitsOnlyForItself(t *testing.T) {
 func TestEnterRightAfterStartInExactModeWaits(t *testing.T) {
 	var r recorder
 	m := New(items("101 a_b"), "'ab", "SIGKILL", noReload).WithExact(true).WithSender(r.send)
-	m, _ = press(m, alt('a'), key(tea.KeyEnter))
+	m, _ = press(m, alt('a'), key(KeyEnter))
 	if m.Outcome() != Running {
 		t.Fatalf("Enter before the first frame in exact mode: Outcome() = %v, want Running", m.Outcome())
 	}
-	m, _ = press(settled(m), key(tea.KeyEnter))
+	m, _ = press(settled(m), key(KeyEnter))
 	if !slices.Equal(targetTexts(m), []string{"101 a_b"}) {
 		t.Errorf("Enter after the first frame: Targets() = %v, want 101 a_b", targetTexts(m))
 	}
@@ -1174,13 +1174,13 @@ func TestEnterRightAfterStartInExactModeWaits(t *testing.T) {
 func TestCtrlZSuspends(t *testing.T) {
 	list := sized(New(items("101 node a"), "", "SIGKILL", noReload))
 	help, _ := press(list, alt('h'))
-	question, _ := press(partlySent(t), key(tea.KeyEsc))
+	question, _ := press(partlySent(t), key(KeyEsc))
 	for name, m := range map[string]Model{"list": list, "help": help, "question": question} {
 		next, cmd := press(m, ctrl('z'))
 		// The command is compared rather than run, as another command,
 		// such as a wait, would block.
-		if cmd == nil || reflect.ValueOf(cmd).Pointer() != reflect.ValueOf(tea.Suspend).Pointer() {
-			t.Errorf("Ctrl-Z in the %s: command is not tea.Suspend", name)
+		if cmd == nil || reflect.ValueOf(cmd).Pointer() != reflect.ValueOf(Suspend).Pointer() {
+			t.Errorf("Ctrl-Z in the %s: command is not Suspend", name)
 		}
 		if next.Outcome() != Running || next.help != m.help || next.confirming != m.confirming {
 			t.Errorf("Ctrl-Z in the %s changed the picker: Outcome() = %v, help %v, confirming %v", name, next.Outcome(), next.help, next.confirming)

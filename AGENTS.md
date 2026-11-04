@@ -29,10 +29,19 @@ Using fzf is fine, and so is writing it from scratch in Go.
   impossible. Pinning keeps both: every process `Enter` signals is on screen,
   and selections survive query changes. This is why kil is written in Go
   rather than wrapping fzf.
-- The picker uses Bubble Tea v2. v1 asked the terminal for its background
-  color when the program started, even for `--help`: a terminal that did not
-  answer kept kil waiting for 5 seconds, and a late answer was typed into the
-  query. v2 asks only when a program requests it, and kil does not.
+- The picker runs on tcell, with kil's own event loop, rather than on Bubble
+  Tea. Bubble Tea v1 asked the terminal for its background color as it
+  started, even for `--help`, which kept kil waiting 5 seconds on a terminal
+  that did not answer and typed a late answer into the query. Bubble Tea v2
+  replaced its input reader at each suspend without closing the old one, so
+  each `Ctrl-Z` leaked a file descriptor, keys typed around the suspend
+  reached the picker out of order, and stopping waited 500 ms for the old
+  reader. tcell stops its reader before giving the terminal back and keeps
+  what it read, and draws each frame before kil handles the next key. Bubble
+  Tea assumed an xterm-like terminal, so without a TERM that tcell knows, or
+  with `dumb`, kil uses xterm's definition rather than refuse to start, and
+  without TERM or with `dumb` it draws no colors, which such a terminal may
+  not show.
 - Matching uses fzf's own algorithm (`github.com/junegunn/fzf/src/algo`), so
   queries behave as in fzf. That package is not a stable API, so the fzf
   version is pinned in `go.mod`.
@@ -59,51 +68,54 @@ Using fzf is fine, and so is writing it from scratch in Go.
   is shown, any key other than `Ctrl-C` and `Ctrl-Z` only closes it, so
   `Enter` cannot signal a row the user cannot see, and `Esc` returns to the
   list rather than leaving kil.
-- `Enter` signals only selected rows drawn on screen. If other selections
-  are off screen (scrolled away, pushed off by pinning, or hidden by a
-  resize), it signals the rows on screen and keeps kil open with the rest
-  brought on screen, so the user sees them before pressing `Enter` again.
-  Signalling them unseen, or dropping them silently, were both rejected.
-  `Esc` after such a partial `Enter` asks `[Y/n]` before leaving the rest;
-  `Ctrl-C` aborts without asking. Bubble Tea draws asynchronously, so an
-  `Enter` typed right away could signal rows not yet on the terminal. `Enter`
-  is therefore ignored for 300 ms after the help closes, and while a selected
-  row on screen came on screen less than 300 ms ago, however it came (a
-  partial `Enter`, scrolling, a resize, a query edit, or starting kil) and
-  whenever it was selected. Each row's wait is its own, so rows that keep
-  coming on screen do not hold `Enter` for rows shown long before. Waiting
-  only after a partial `Enter`, or only for rows already selected, still let
-  quick keys signal unseen rows, such as `Up`, `Alt-A`, `Enter`. The cursor
-  row alone does not wait, so typing a query and pressing `Enter` at once
-  works as in fzf. Keys arriving after the outcome is decided are ignored,
-  because Bubble Tea delivers them until it quits, and `Ctrl-C` then `Enter`
-  signalled rows. `Alt-A` likewise selects only the rows on screen and then
-  scrolls to keep the rows it selected there.
+- `Enter` signals only selected rows drawn on screen. If other selections are
+  off screen (scrolled away, pushed off by pinning, or hidden by a resize), it
+  signals the rows on screen and keeps kil open with the rest brought on
+  screen, so the user sees them before pressing `Enter` again. Signalling them
+  unseen, or dropping them silently, were both rejected. `Esc` after such a
+  partial `Enter` asks `[Y/n]` before leaving the rest; `Ctrl-C` aborts
+  without asking. Keys typed ahead reach kil before the user has seen the
+  frames drawn between them, so an `Enter` typed right away could signal rows
+  the user has not seen. `Enter` is therefore ignored for 300 ms after the
+  help closes, and while a selected row on screen came on screen less than 300
+  ms ago, however it came (a partial `Enter`, scrolling, a resize, a query
+  edit, or starting kil) and whenever it was selected. Each row's wait is its
+  own, so rows that keep coming on screen do not hold `Enter` for rows shown
+  long before. Waiting only after a partial `Enter`, or only for rows already
+  selected, still let quick keys signal unseen rows, such as `Up`, `Alt-A`,
+  `Enter`. The cursor row alone does not wait, so typing a query and pressing
+  `Enter` at once works as in fzf. The picker ends as soon as the outcome is
+  decided, and ignores anything handled after it, as `Ctrl-C` then `Enter`
+  once signalled rows. `Alt-A` likewise selects only the rows on screen and
+  then scrolls to keep the rows it selected there.
 - Once the process list is read, kil catches `SIGHUP`, `SIGINT`, `SIGTERM`,
-  and `SIGQUIT` and ends with 128 plus the signal's number after restoring
-  the terminal and reporting what it signalled. Left to their default
-  actions, or to Bubble Tea's handler, they ended kil with status 2 or with
-  the terminal in raw mode. Before the list is read, nothing is signalled
-  and the terminal is untouched, so the default actions stay and a hung `ps`
-  cannot keep kil alive. While kil is signalling, including a partial
-  `Enter`, `SIGINT`, `SIGTERM`, and `SIGQUIT` stop it as they would
-  `kill(1)`, even during the check before a signal, but `SIGHUP` does not:
-  killing the shell kil was started from hangs up the terminal, and kil then
-  died before signalling the rest of the selection. A second `SIGINT`,
-  `SIGTERM`, or `SIGQUIT` takes its default action, so kil ends even if a
-  `ps` hangs. Signals are recorded as they are caught, with `SIGHUP` on its
-  own channel, as `os/signal` drops what does not fit in a channel.
-- `Ctrl-Z` and `SIGTSTP` suspend kil after restoring the terminal. kil
-  suspends itself in a Bubble Tea filter rather than with `tea.Suspend`:
-  Bubble Tea told the picker only after reading keys again, so an `Enter`
-  typed at `fg` skipped the wait for the screen to be drawn again. kil
+  and `SIGQUIT` and ends with 128 plus the signal's number after restoring the
+  terminal and reporting what it signalled. Left to their default actions,
+  they ended kil with status 2 or with the terminal in raw mode. Before the
+  list is read, nothing is signalled and the terminal is untouched, so the
+  default actions stay and a hung `ps` cannot keep kil alive. While kil is
+  signalling, including a partial `Enter`, `SIGINT`, `SIGTERM`, and `SIGQUIT`
+  stop it as they would `kill(1)`, even during the check before a signal, but
+  `SIGHUP` does not: killing the shell kil was started from hangs up the
+  terminal, and kil then died before signalling the rest of the selection. A
+  second `SIGINT`, `SIGTERM`, or `SIGQUIT` takes its default action, so kil
+  ends even if a `ps` hangs. A signal caught while picking also keeps a
+  partial `Enter` that arrives after it from starting, and gives kil its
+  status even if the terminal fails as it hangs up. Signals are recorded as
+  they are caught, with `SIGHUP` on its own channel, as `os/signal` drops what
+  does not fit in a channel.
+- `Ctrl-Z` and `SIGTSTP` suspend kil after restoring the terminal. The event
+  loop suspends kil itself, and tells the picker that kil resumed before it
+  handles any key typed meanwhile, so an `Enter` typed at `fg` waits for the
+  screen to be drawn again. kil does not stop if a signal was caught while it
+  gave the terminal back, and ends if it cannot take the terminal again. kil
   catches `SIGTSTP` to restore the terminal first, and the Go runtime keeps
   swallowing `SIGTSTP` even after `signal.Stop`, so kil stops its process
   group with `SIGSTOP`; a shell may report the job as stopped by a signal.
   Without a shell to bring it back, as when a terminal emulator or tmux runs
-  kil directly, its process group is orphaned and `Ctrl-Z` does nothing,
-  since kil would stay stopped for good. kil takes its parent being in the
-  same session but another process group as the sign of such a shell.
+  kil directly, its process group is orphaned and `Ctrl-Z` does nothing, since
+  kil would stay stopped for good. kil takes its parent being in the same
+  session but another process group as the sign of such a shell.
 - The check before signalling compares the ps line without the PPID. Killing
   a parent reparents its children, so with the PPID a child selected after
   its parent was skipped as changed and survived.

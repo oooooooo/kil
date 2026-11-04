@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/mattn/go-runewidth"
 	"github.com/rivo/uniseg"
 
@@ -69,8 +68,9 @@ func (s style) sgr() string {
 }
 
 // headerLines is the number of lines below the rows: the key help, the info
-// line, and the prompt. Bubble Tea drops the lines that do not fit, so a short
-// terminal drops the help and then the info line to keep a row on screen.
+// line, and the prompt. The view never has more lines than the terminal, so
+// a short terminal drops the help and then the info line to keep a row on
+// screen.
 func (m Model) headerLines() int {
 	return max(min(3, m.height-1), 1)
 }
@@ -142,14 +142,6 @@ func (m Model) shownRows() (from, to int) {
 		}
 	}
 	return min(from, to), to
-}
-
-// View implements tea.Model. kil takes the whole screen, as fzf does, and
-// gives it back when it ends.
-func (m Model) View() tea.View {
-	v := tea.NewView(m.render())
-	v.AltScreen = true
-	return v
 }
 
 // render draws the screen. Like fzf's default layout, the prompt is at the

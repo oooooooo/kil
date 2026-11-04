@@ -3,7 +3,6 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,7 +12,7 @@ import (
 	"sync"
 	"syscall"
 
-	tea "charm.land/bubbletea/v2"
+	"github.com/gdamore/tcell/v2"
 
 	"github.com/oooooooo/kil/internal/picker"
 	"github.com/oooooooo/kil/internal/proc"
@@ -154,16 +153,20 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	sent := &batches{}
 	model, err := pick(ui.New(items, opts.query, signal.Label(sig), list).WithExact(opts.exact || envExact).WithSender(sender(sent, sig, in)), in)
 	if err != nil {
-		return pickFailed(sent, err, stdout, stderr)
+		return pickFailed(sent, err, stdout, stderr, in)
 	}
 	return finish(model, sig, sent, stdout, stderr, in)
 }
 
 // pickFailed reports a picker failure after the reports of the rows already
-// signalled, which would otherwise be lost.
-func pickFailed(sent *batches, err error, stdout, stderr io.Writer) int {
+// signalled, which would otherwise be lost. A signal caught meanwhile, as
+// when the terminal hangs up, still gives kil its status.
+func pickFailed(sent *batches, err error, stdout, stderr io.Writer, in *interrupts) int {
 	sent.flush(stdout, stderr)
 	reportf(stderr, "kil: %v\n", err)
+	if code, ok := in.ended(); ok {
+		return code
+	}
 	return exitError
 }
 
@@ -263,11 +266,14 @@ func finish(model ui.Model, sig syscall.Signal, sent *batches, stdout, stderr io
 // stderr carry only the results and can be redirected, as with fzf. A
 // signal caught ends the picker.
 func pick(m ui.Model, in *interrupts) (ui.Model, error) {
-	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	s, err := newScreen(os.Getenv("TERM"))
 	if err != nil {
 		return m, fmt.Errorf("no terminal: %w", err)
 	}
-	defer func() { _ = tty.Close() }()
+	if err := s.Init(); err != nil {
+		return m, fmt.Errorf("no terminal: %w", err)
+	}
+	defer s.Fini()
 
 	// SIGTSTP from outside suspends kil as Ctrl-Z does. Left to its default
 	// action, it stopped kil with the terminal in raw mode.
@@ -275,26 +281,16 @@ func pick(m ui.Model, in *interrupts) (ui.Model, error) {
 	ossignal.Notify(tstp, syscall.SIGTSTP)
 	defer ossignal.Stop(tstp)
 
-	var p *tea.Program
-	suspend := suspender{
-		in:         in,
-		canSuspend: jobControlled,
-		release:    func() error { return p.ReleaseTerminal() },
-		stop:       stopJob,
-		restore:    func() error { return p.RestoreTerminal() },
-	}
-	// Bubble Tea's own handler is replaced: it ended kil with an error on
-	// SIGINT, did not tell SIGTERM from Esc, and ignored SIGHUP.
-	p = tea.NewProgram(m, tea.WithInput(tty), tea.WithOutput(tty), tea.WithoutSignalHandler(), tea.WithFilter(suspend.filter))
-
-	// The goroutines only ask the picker to quit or suspend, and each waits
-	// on its own, so neither can keep the other waiting.
+	ext := make(chan ui.Msg)
 	ended := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Go(func() {
 		select {
 		case <-in.whenCaught():
-			p.Quit()
+			select {
+			case ext <- ui.QuitMsg{}:
+			case <-ended:
+			}
 		case <-ended:
 		}
 	})
@@ -302,24 +298,55 @@ func pick(m ui.Model, in *interrupts) (ui.Model, error) {
 		for {
 			select {
 			case <-tstp:
-				p.Send(tea.SuspendMsg{})
+				select {
+				case ext <- ui.SuspendMsg{}:
+				case <-ended:
+					return
+				}
 			case <-ended:
 				return
 			}
 		}
 	})
-	final, err := p.Run()
+	final, err := ui.Run(s, m, ui.Control{
+		External:   ext,
+		CanSuspend: canSuspend(in, jobControlled),
+		Stop:       stopJob,
+	})
 	close(ended)
 	wg.Wait()
 	if err != nil {
-		return m, fmt.Errorf("picker failed: %w", err)
+		return final, fmt.Errorf("picker failed: %w", err)
 	}
-	fm, ok := final.(ui.Model)
-	if !ok {
-		return m, errors.New("picker returned an unexpected model")
-	}
-	return fm, nil
+	return final, nil
 }
+
+// newScreen returns a screen for the terminal term names. Without a term
+// that tcell knows, or with dumb, which cannot move the cursor, the screen is
+// xterm's, which most terminals follow, as kil drew before it used tcell.
+// Without TERM, or with dumb, the terminal may not show colors, so the
+// screen has none.
+func newScreen(term string) (tcell.Screen, error) {
+	ti, err := tcell.LookupTerminfo(term)
+	if err != nil || term == "dumb" {
+		if ti, err = tcell.LookupTerminfo("xterm-256color"); err != nil {
+			return nil, err
+		}
+	}
+	s, err := tcell.NewTerminfoScreenFromTtyTerminfo(nil, ti)
+	if err != nil {
+		return nil, err
+	}
+	if term == "" || term == "dumb" {
+		return monochrome{s}, nil
+	}
+	return s, nil
+}
+
+// monochrome is a screen drawn without colors.
+type monochrome struct{ tcell.Screen }
+
+func (monochrome) Colors() int { return 0 }
 
 // signalAll signals targets and reports each result. SIGINT, SIGTERM, or
 // SIGQUIT stops it, as it would kill(1): the targets not signalled are

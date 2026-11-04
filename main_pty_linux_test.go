@@ -155,6 +155,10 @@ type ptyKil struct {
 	shell  *exec.Cmd
 	pid    int
 
+	// initial is the terminal's mode before kil started, which kil must
+	// leave it in.
+	initial *unix.Termios
+
 	mu  sync.Mutex
 	out bytes.Buffer
 }
@@ -181,8 +185,12 @@ func launch(t *testing.T, withShell bool, env []string) *ptyKil {
 	if err := unix.IoctlSetWinsize(int(master.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 24, Col: 100}); err != nil {
 		t.Fatal(err)
 	}
+	initial, err := unix.IoctlGetTermios(int(master.Fd()), unix.TCGETS)
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
-	k := &ptyKil{t: t, master: master, dir: dir, tag: fmt.Sprintf("kiltest%d", time.Now().UnixNano())}
+	k := &ptyKil{t: t, master: master, dir: dir, tag: fmt.Sprintf("kiltest%d", time.Now().UnixNano()), initial: initial}
 	// The tag names the shell in the process list.
 	k.shell = exec.Command(os.Args[0], "-test.run=^TestShellChild$", "kilshell-"+k.tag)
 	k.shell.Env = append(os.Environ(), "KIL_TEST_SHELL=1")
@@ -298,8 +306,22 @@ func (k *ptyKil) state() string {
 	return fields[0]
 }
 
-// cooked reports whether the terminal is back in the mode a shell expects,
-// with line editing and echo.
+// restored waits for kil to leave the alternate screen, written after
+// output from, and reports whether the terminal is back in its mode from
+// before kil started.
+func (k *ptyKil) restored(from int) bool {
+	k.t.Helper()
+	k.waitFor(from, "\x1b[?1049l")
+	tios, err := unix.IoctlGetTermios(int(k.master.Fd()), unix.TCGETS)
+	if err != nil {
+		k.t.Fatal(err)
+	}
+	return tios.Iflag == k.initial.Iflag && tios.Oflag == k.initial.Oflag &&
+		tios.Cflag == k.initial.Cflag && tios.Lflag == k.initial.Lflag && tios.Cc == k.initial.Cc
+}
+
+// cooked reports whether the terminal has line editing and echo, as a
+// shell expects and kil turns off while it runs.
 func (k *ptyKil) cooked() bool {
 	k.t.Helper()
 	tios, err := unix.IoctlGetTermios(int(k.master.Fd()), unix.TCGETS)
@@ -323,8 +345,8 @@ func TestSignalEndsKilAndRestoresTheTerminal(t *testing.T) {
 			if code := k.code(); code != want {
 				t.Errorf("exit status %d, want %d", code, want)
 			}
-			if !k.cooked() || !strings.Contains(k.output(from), "\x1b[?1049l") {
-				t.Errorf("terminal not restored: cooked %v, output %q", k.cooked(), k.output(from))
+			if !k.restored(from) {
+				t.Errorf("terminal not restored; output %q", k.output(from))
 			}
 		})
 	}
@@ -342,8 +364,8 @@ func TestSuspendAndResume(t *testing.T) {
 			from := k.mark()
 			suspend(k)
 			k.eventually("kil to stop", func() bool { return k.state() == "T" })
-			if !k.cooked() || !strings.Contains(k.output(from), "\x1b[?1049l") {
-				t.Errorf("terminal not restored while kil is stopped: cooked %v, output %q", k.cooked(), k.output(from))
+			if !k.restored(from) {
+				t.Errorf("terminal not restored while kil is stopped; output %q", k.output(from))
 			}
 			// The shell's fg: kil's job is still in the foreground.
 			from = k.mark()
@@ -436,13 +458,28 @@ func TestSignalWhileStopped(t *testing.T) {
 	if err := unix.Kill(k.pid, unix.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
+	from := k.mark()
 	if err := unix.Kill(k.pid, unix.SIGCONT); err != nil {
 		t.Fatal(err)
 	}
 	if code := k.code(); code != 143 {
 		t.Errorf("exit status %d, want 143", code)
 	}
-	if !k.cooked() {
-		t.Error("terminal left in raw mode")
+	if !k.restored(from) {
+		t.Errorf("terminal not restored; output %q", k.output(from))
+	}
+}
+
+// Without a TERM that tcell knows, or with TERM=dumb, kil draws as on xterm,
+// as it did before it used tcell, rather than refuse to start.
+func TestUnknownTermStillStarts(t *testing.T) {
+	for _, term := range []string{"", "dumb", "kil-unknown-term"} {
+		t.Run("TERM="+term, func(t *testing.T) {
+			k := startKil(t, "TERM="+term)
+			k.send("\x03")
+			if code := k.code(); code != exitAborted {
+				t.Errorf("Ctrl-C: exit status %d, want %d", code, exitAborted)
+			}
+		})
 	}
 }

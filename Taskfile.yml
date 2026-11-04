@@ -1,0 +1,53 @@
+version: "3"
+
+tasks:
+  build:
+    desc: Build ./kil
+    cmds:
+      - go build -o kil .
+    sources:
+      - "**/*.go"
+      - go.mod
+      - go.sum
+    generates:
+      - kil
+
+  run:
+    desc: "Build and run kil with KIL_SIGNAL=0, which signals nothing (task run -- <query>)"
+    deps: [build]
+    cmds:
+      - KIL_SIGNAL=0 ./kil {{.CLI_ARGS}}
+    interactive: true
+
+  install:
+    desc: Install kil into $(go env GOPATH)/bin
+    cmds:
+      - go install .
+
+  test:
+    desc: Run the Go tests
+    cmds:
+      - go test ./...
+
+  test:race:
+    desc: Run the Go tests with the race detector
+    cmds:
+      - go test -race ./...
+
+  e2e:
+    desc: Drive the built kil through tmux
+    cmds:
+      - bash test/e2e_test.sh
+
+  lint:
+    desc: Lint Go and Markdown
+    cmds:
+      - golangci-lint run ./...
+      - markdownlint *.md
+
+  check:
+    desc: Run every check before a commit
+    cmds:
+      - task: lint
+      - task: test:race
+      - task: e2e

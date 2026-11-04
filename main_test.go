@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/oooooooo/kil/internal/picker"
 	"github.com/oooooooo/kil/internal/proc"
@@ -142,10 +142,10 @@ func TestClosedStdoutDoesNotStopSignalling(t *testing.T) {
 // Esc and Ctrl-C are how the user leaves kil on purpose, so they end
 // quietly, as fzf does, with only the exit status telling a script.
 func TestAbortEndsWithoutAMessage(t *testing.T) {
-	for _, k := range []tea.KeyType{tea.KeyEsc, tea.KeyCtrlC} {
-		next, _ := ui.New(nil, "", "SIGKILL", nil).Update(tea.KeyMsg{Type: k})
+	for _, k := range []tea.KeyPressMsg{{Code: tea.KeyEscape}, {Code: 'c', Mod: tea.ModCtrl}} {
+		next, _ := ui.New(nil, "", "SIGKILL", nil).Update(k)
 		var stdout, stderr bytes.Buffer
-		code := finish(next.(ui.Model), syscall.SIGKILL, &batches{}, &stdout, &stderr)
+		code := finish(next.(ui.Model), syscall.SIGKILL, &batches{}, &stdout, &stderr, nil)
 		if code != exitAborted || stdout.Len() != 0 || stderr.Len() != 0 {
 			t.Errorf("%v: finish = %d, stdout %q, stderr %q; want %d and no output", k, code, stdout.String(), stderr.String(), exitAborted)
 		}
@@ -191,7 +191,7 @@ func TestChildSelectedAfterItsParentIsSignalled(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	if code := signalAll(targets, syscall.SIGKILL, &stdout, &stderr); code != exitOK {
+	if code := signalAll(targets, syscall.SIGKILL, &stdout, &stderr, nil); code != exitOK {
 		t.Errorf("signalAll = %d, want %d\nstdout:\n%s\nstderr:\n%s", code, exitOK, stdout.String(), stderr.String())
 	}
 }
@@ -222,17 +222,17 @@ func TestStoppedReportsEarlierBatchesAndTheSelectionsLeft(t *testing.T) {
 	m = press(m,
 		tea.WindowSizeMsg{Width: 80, Height: 24},
 		m.Init()(), // the first frame is drawn
-		tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}, Alt: true},
+		tea.KeyPressMsg{Code: 'a', Mod: tea.ModAlt},
 		tea.WindowSizeMsg{Width: 80, Height: 10},
-		tea.KeyMsg{Type: tea.KeyEnter},
-		tea.KeyMsg{Type: tea.KeyEsc},
-		tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}},
+		tea.KeyPressMsg{Code: tea.KeyEnter},
+		tea.KeyPressMsg{Code: tea.KeyEscape},
+		tea.KeyPressMsg{Code: 'y', Text: "y"},
 	)
 	if m.Outcome() != ui.Stopped {
 		t.Fatalf("Outcome() = %v, want Stopped", m.Outcome())
 	}
 	var stdout, stderr bytes.Buffer
-	code := finish(m, syscall.SIGKILL, &b, &stdout, &stderr)
+	code := finish(m, syscall.SIGKILL, &b, &stdout, &stderr, nil)
 	if code != exitProblems {
 		t.Errorf("finish = %d, want %d", code, exitProblems)
 	}
@@ -275,10 +275,10 @@ func TestFailureAfterAPartialEnterDoesNotClaimNothingWasSignalled(t *testing.T) 
 	for _, msg := range []tea.Msg{
 		tea.WindowSizeMsg{Width: 80, Height: 24},
 		m.Init()(), // the first frame is drawn
-		tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}, Alt: true},
+		tea.KeyPressMsg{Code: 'a', Mod: tea.ModAlt},
 		tea.WindowSizeMsg{Width: 80, Height: 10},
-		tea.KeyMsg{Type: tea.KeyEnter},
-		tea.KeyMsg{Type: tea.KeyCtrlR},
+		tea.KeyPressMsg{Code: tea.KeyEnter},
+		tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl},
 	} {
 		var next tea.Model
 		next, cmd = m.Update(msg)
@@ -290,7 +290,7 @@ func TestFailureAfterAPartialEnterDoesNotClaimNothingWasSignalled(t *testing.T) 
 		t.Fatalf("Outcome() = %v, want ListFailed", m.Outcome())
 	}
 	var stdout, stderr bytes.Buffer
-	finish(m, syscall.SIGKILL, &b, &stdout, &stderr)
+	finish(m, syscall.SIGKILL, &b, &stdout, &stderr, nil)
 	if strings.Contains(stderr.String(), "nothing was signalled") || !strings.Contains(stderr.String(), "ps failed") {
 		t.Errorf("stderr = %q, want the error without \"nothing was signalled\"", stderr.String())
 	}

@@ -29,6 +29,10 @@ Using fzf is fine, and so is writing it from scratch in Go.
   impossible. Pinning keeps both: every process `Enter` signals is on screen,
   and selections survive query changes. This is why kil is written in Go
   rather than wrapping fzf.
+- The picker uses Bubble Tea v2. v1 asked the terminal for its background
+  color when the program started, even for `--help`: a terminal that did not
+  answer kept kil waiting for 5 seconds, and a late answer was typed into the
+  query. v2 asks only when a program requests it, and kil does not.
 - Matching uses fzf's own algorithm (`github.com/junegunn/fzf/src/algo`), so
   queries behave as in fzf. That package is not a stable API, so the fzf
   version is pinned in `go.mod`.
@@ -52,9 +56,9 @@ Using fzf is fine, and so is writing it from scratch in Go.
 - The header names only `Tab`, `Alt-A`, `Enter` with its signal, and `Alt-H`,
   and `Alt-H` shows every key in place of the list. The full key list in one
   line was cut on narrow terminals before the keys that matter. While the help
-  is shown, any key other than `Ctrl-C` only closes it, so `Enter` cannot
-  signal a row the user cannot see, and `Esc` returns to the list rather than
-  leaving kil.
+  is shown, any key other than `Ctrl-C` and `Ctrl-Z` only closes it, so
+  `Enter` cannot signal a row the user cannot see, and `Esc` returns to the
+  list rather than leaving kil.
 - `Enter` signals only selected rows drawn on screen. If other selections
   are off screen (scrolled away, pushed off by pinning, or hidden by a
   resize), it signals the rows on screen and keeps kil open with the rest
@@ -75,6 +79,31 @@ Using fzf is fine, and so is writing it from scratch in Go.
   because Bubble Tea delivers them until it quits, and `Ctrl-C` then `Enter`
   signalled rows. `Alt-A` likewise selects only the rows on screen and then
   scrolls to keep the rows it selected there.
+- Once the process list is read, kil catches `SIGHUP`, `SIGINT`, `SIGTERM`,
+  and `SIGQUIT` and ends with 128 plus the signal's number after restoring
+  the terminal and reporting what it signalled. Left to their default
+  actions, or to Bubble Tea's handler, they ended kil with status 2 or with
+  the terminal in raw mode. Before the list is read, nothing is signalled
+  and the terminal is untouched, so the default actions stay and a hung `ps`
+  cannot keep kil alive. While kil is signalling, including a partial
+  `Enter`, `SIGINT`, `SIGTERM`, and `SIGQUIT` stop it as they would
+  `kill(1)`, even during the check before a signal, but `SIGHUP` does not:
+  killing the shell kil was started from hangs up the terminal, and kil then
+  died before signalling the rest of the selection. A second `SIGINT`,
+  `SIGTERM`, or `SIGQUIT` takes its default action, so kil ends even if a
+  `ps` hangs. Signals are recorded as they are caught, with `SIGHUP` on its
+  own channel, as `os/signal` drops what does not fit in a channel.
+- `Ctrl-Z` and `SIGTSTP` suspend kil after restoring the terminal. kil
+  suspends itself in a Bubble Tea filter rather than with `tea.Suspend`:
+  Bubble Tea told the picker only after reading keys again, so an `Enter`
+  typed at `fg` skipped the wait for the screen to be drawn again. kil
+  catches `SIGTSTP` to restore the terminal first, and the Go runtime keeps
+  swallowing `SIGTSTP` even after `signal.Stop`, so kil stops its process
+  group with `SIGSTOP`; a shell may report the job as stopped by a signal.
+  Without a shell to bring it back, as when a terminal emulator or tmux runs
+  kil directly, its process group is orphaned and `Ctrl-Z` does nothing,
+  since kil would stay stopped for good. kil takes its parent being in the
+  same session but another process group as the sign of such a shell.
 - The check before signalling compares the ps line without the PPID. Killing
   a parent reparents its children, so with the PPID a child selected after
   its parent was skipped as changed and survived.

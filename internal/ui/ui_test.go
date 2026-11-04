@@ -3,11 +3,12 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/oooooooo/kil/internal/picker"
@@ -26,7 +27,7 @@ func plain(view string) string { return ansi.Strip(view) }
 
 func noReload() ([]picker.Item, error) { return nil, nil }
 
-func press(m Model, keys ...tea.KeyMsg) (Model, tea.Cmd) {
+func press(m Model, keys ...tea.Msg) (Model, tea.Cmd) {
 	var cmd tea.Cmd
 	for _, k := range keys {
 		var next tea.Model
@@ -36,16 +37,24 @@ func press(m Model, keys ...tea.KeyMsg) (Model, tea.Cmd) {
 	return m, cmd
 }
 
-func typed(s string) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+func typed(s string) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: []rune(s)[0], Text: s}
 }
 
-func alt(r rune) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: true}
+func alt(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: r, Mod: tea.ModAlt}
 }
 
-func key(t tea.KeyType) tea.KeyMsg {
-	return tea.KeyMsg{Type: t}
+func ctrl(r rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg{Code: r, Mod: tea.ModCtrl}
+}
+
+func key(code rune, mods ...tea.KeyMod) tea.KeyPressMsg {
+	k := tea.KeyPressMsg{Code: code}
+	for _, mod := range mods {
+		k.Mod |= mod
+	}
+	return k
 }
 
 func sized(m Model) Model {
@@ -69,7 +78,7 @@ func targetTexts(m Model) []string {
 func TestTypingFiltersTheView(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", noReload))
 	m, _ = press(m, typed("pyt"))
-	view := plain(m.View())
+	view := plain(m.render())
 	if !strings.Contains(view, "202 python b") || strings.Contains(view, "101 node a") {
 		t.Errorf("view after typing \"pyt\":\n%s", view)
 	}
@@ -77,8 +86,8 @@ func TestTypingFiltersTheView(t *testing.T) {
 
 func TestInitialQueryIsApplied(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b"), "node", "SIGKILL", noReload))
-	if strings.Contains(plain(m.View()), "202 python b") {
-		t.Errorf("initial query not applied:\n%s", plain(m.View()))
+	if strings.Contains(plain(m.render()), "202 python b") {
+		t.Errorf("initial query not applied:\n%s", plain(m.render()))
 	}
 }
 
@@ -88,7 +97,7 @@ func TestBackspaceAndCtrlUEditTheQuery(t *testing.T) {
 	if m.Query() != "py" {
 		t.Errorf("Query() after backspace = %q, want \"py\"", m.Query())
 	}
-	m, _ = press(m, key(tea.KeyCtrlU))
+	m, _ = press(m, ctrl('u'))
 	if m.Query() != "" {
 		t.Errorf("Query() after Ctrl-U = %q, want empty", m.Query())
 	}
@@ -96,8 +105,8 @@ func TestBackspaceAndCtrlUEditTheQuery(t *testing.T) {
 
 func TestSelectionStaysVisibleAfterQueryChange(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b"), "node", "SIGKILL", noReload))
-	m, _ = press(m, key(tea.KeyTab), key(tea.KeyCtrlU), typed("python"))
-	view := plain(m.View())
+	m, _ = press(m, key(tea.KeyTab), ctrl('u'), typed("python"))
+	view := plain(m.render())
 	if !strings.Contains(view, "101 node a") {
 		t.Errorf("selected node row is not shown after changing the query:\n%s", view)
 	}
@@ -126,9 +135,9 @@ func TestEnterWithNothingShownSelectsNothing(t *testing.T) {
 }
 
 func TestEscAndCtrlCAbort(t *testing.T) {
-	for _, k := range []tea.KeyType{tea.KeyEsc, tea.KeyCtrlC} {
+	for _, k := range []tea.KeyPressMsg{key(tea.KeyEscape), ctrl('c')} {
 		m := sized(New(items("101 node a"), "", "SIGKILL", noReload))
-		m, _ = press(m, key(k))
+		m, _ = press(m, k)
 		if m.Outcome() != Aborted {
 			t.Errorf("Outcome() after %v = %v, want Aborted", k, m.Outcome())
 		}
@@ -149,14 +158,14 @@ func TestAltASelectsEveryShownRow(t *testing.T) {
 func TestCtrlRReloadsTheList(t *testing.T) {
 	reload := func() ([]picker.Item, error) { return items("101 node a", "404 go d"), nil }
 	m := sized(New(items("101 node a"), "", "SIGKILL", reload))
-	m, cmd := press(m, key(tea.KeyCtrlR))
+	m, cmd := press(m, ctrl('r'))
 	if cmd == nil {
 		t.Fatal("Ctrl-R returned no command")
 	}
 	next, _ := m.Update(cmd())
 	m = next.(Model)
-	if !strings.Contains(plain(m.View()), "404 go d") {
-		t.Errorf("reloaded row not shown:\n%s", plain(m.View()))
+	if !strings.Contains(plain(m.render()), "404 go d") {
+		t.Errorf("reloaded row not shown:\n%s", plain(m.render()))
 	}
 }
 
@@ -164,7 +173,7 @@ func TestFailedReloadEndsWithoutTargets(t *testing.T) {
 	reload := func() ([]picker.Item, error) { return nil, errors.New("ps failed") }
 	m := sized(New(items("101 node a"), "", "SIGKILL", reload))
 	m, _ = press(m, key(tea.KeyTab))
-	m, cmd := press(m, key(tea.KeyCtrlR))
+	m, cmd := press(m, ctrl('r'))
 	next, quit := m.Update(cmd())
 	m = next.(Model)
 	if m.Outcome() != ListFailed || m.Err() == nil {
@@ -192,7 +201,7 @@ func TestHeaderShowsTheMainKeysOnly(t *testing.T) {
 func TestAltHShowsHelpNamingTheSignal(t *testing.T) {
 	m := sized(New(items("101 node a"), "", "SIGTERM", noReload))
 	m, _ = press(m, alt('h'))
-	view := plain(m.View())
+	view := plain(m.render())
 	for _, want := range []string{"Enter", "SIGTERM", "Ctrl-X", "Ctrl-R", "Esc"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("help does not mention %q:\n%s", want, view)
@@ -211,8 +220,8 @@ func TestKeyWhileHelpIsShownOnlyClosesIt(t *testing.T) {
 	if m.Outcome() != Running {
 		t.Errorf("Enter with the help shown: Outcome() = %v, want Running", m.Outcome())
 	}
-	if !strings.Contains(plain(m.View()), "101 node a") {
-		t.Errorf("Enter did not close the help:\n%s", plain(m.View()))
+	if !strings.Contains(plain(m.render()), "101 node a") {
+		t.Errorf("Enter did not close the help:\n%s", plain(m.render()))
 	}
 }
 
@@ -224,14 +233,14 @@ func TestEscWhileHelpIsShownClosesIt(t *testing.T) {
 	if m.Outcome() != Running {
 		t.Errorf("Esc with the help shown: Outcome() = %v, want Running", m.Outcome())
 	}
-	if !strings.Contains(plain(m.View()), "101 node a") {
-		t.Errorf("Esc did not close the help:\n%s", plain(m.View()))
+	if !strings.Contains(plain(m.render()), "101 node a") {
+		t.Errorf("Esc did not close the help:\n%s", plain(m.render()))
 	}
 }
 
 func TestCtrlCWhileHelpIsShownAborts(t *testing.T) {
 	m := sized(New(items("101 node a"), "", "SIGKILL", noReload))
-	m, _ = press(m, alt('h'), key(tea.KeyCtrlC))
+	m, _ = press(m, alt('h'), ctrl('c'))
 	if m.Outcome() != Aborted {
 		t.Errorf("Ctrl-C with the help shown: Outcome() = %v, want Aborted", m.Outcome())
 	}
@@ -246,7 +255,7 @@ func TestViewScrollsToKeepTheCursorVisible(t *testing.T) {
 	for range 40 {
 		m, _ = press(m, key(tea.KeyUp))
 	}
-	view := plain(m.View())
+	view := plain(m.render())
 	if !strings.Contains(view, lines[40]) {
 		t.Errorf("cursor row %q not in view:\n%s", lines[40], view)
 	}
@@ -267,7 +276,7 @@ func TestMovingBackInsideTheWindowDoesNotScroll(t *testing.T) {
 	// Rows grow upward from the header, so the window's topmost row is the
 	// first non-blank line.
 	firstRow := func(m Model) string {
-		for _, l := range strings.Split(plain(m.View()), "\n") {
+		for _, l := range strings.Split(plain(m.render()), "\n") {
 			if strings.TrimSpace(l) != "" {
 				return l
 			}
@@ -282,7 +291,7 @@ func TestMovingBackInsideTheWindowDoesNotScroll(t *testing.T) {
 }
 
 func viewLines(m Model) []string {
-	return strings.Split(plain(m.View()), "\n")
+	return strings.Split(plain(m.render()), "\n")
 }
 
 func TestLayoutMatchesFzf(t *testing.T) {
@@ -307,7 +316,7 @@ func TestLayoutMatchesFzf(t *testing.T) {
 func TestSelectedRowShowsMarker(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", noReload))
 	m, _ = press(m, key(tea.KeyTab))
-	view := plain(m.View())
+	view := plain(m.render())
 	if !strings.Contains(view, "▌┃101 node a") {
 		t.Errorf("selected row has no ┃ marker:\n%s", view)
 	}
@@ -336,7 +345,7 @@ func TestLongLineShiftsToShowTheMatch(t *testing.T) {
 func TestLongLineWithoutMatchIsCutWithEllipsis(t *testing.T) {
 	long := "101 java " + strings.Repeat("x", 100)
 	m := sized(New(items(long), "", "SIGKILL", noReload))
-	view := plain(m.View())
+	view := plain(m.render())
 	if !strings.Contains(view, "xx··") {
 		t.Errorf("long line is not cut with a trailing ellipsis:\n%s", view)
 	}
@@ -346,9 +355,9 @@ func TestColumnsAndMatchesAreColored(t *testing.T) {
 	line := "  101     1 alice    sleep           sleep 60"
 	other := "  202     1 bob      sleep           sleep 99"
 	m := sized(New(items(line, other), "'60", "SIGKILL", noReload))
-	m, _ = press(m, key(tea.KeyCtrlU)) // empty query: both rows, cursor on the first
+	m, _ = press(m, ctrl('u')) // empty query: both rows, cursor on the first
 	m, _ = press(m, typed("'99"))
-	view := m.View()
+	view := m.render()
 	for name, want := range map[string]string{
 		"PID":           fg(colorPID) + "202",
 		"PPID":          fg(colorPPID) + "1",
@@ -361,8 +370,8 @@ func TestColumnsAndMatchesAreColored(t *testing.T) {
 		}
 	}
 
-	m, _ = press(m, key(tea.KeyCtrlU))
-	view = m.View()
+	m, _ = press(m, ctrl('u'))
+	view = m.render()
 	if !strings.Contains(view, fg(colorPID)+"101") {
 		t.Errorf("PID of a non-cursor row is not colored:\n%q", view)
 	}
@@ -370,7 +379,7 @@ func TestColumnsAndMatchesAreColored(t *testing.T) {
 
 func TestMatchOnNonCursorRowIsColored(t *testing.T) {
 	m := sized(New(items("  101 1 alice sleep zzz", "  202 1 bob sleep zzz"), "zzz", "SIGKILL", noReload))
-	view := m.View()
+	view := m.render()
 	if !strings.Contains(view, fg(colorMatch)+"z") {
 		t.Errorf("match on the non-cursor row is not colored:\n%q", view)
 	}
@@ -402,7 +411,7 @@ func TestKeysMoveAsInFzfDefaultLayout(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b", "303 ruby c"), "", "SIGKILL", noReload))
 	m, _ = press(m, key(tea.KeyUp), key(tea.KeyUp)) // ruby
 	m, _ = press(m, key(tea.KeyTab))                // select ruby, move down to python
-	m, _ = press(m, key(tea.KeyShiftTab))           // select python, move up
+	m, _ = press(m, key(tea.KeyTab, tea.ModShift))  // select python, move up
 	m, _ = press(m, key(tea.KeyEnter))
 	// Targets come in the order they were selected.
 	if got := targetTexts(m); !slices.Equal(got, []string{"303 ruby c", "202 python b"}) {
@@ -423,7 +432,7 @@ func TestTabMovesDownTowardTheBestMatch(t *testing.T) {
 func TestShiftedLineKeepsTenColumnsAfterTheMatch(t *testing.T) {
 	long := "  101     1 alice    node            " + strings.Repeat("x", 100) + "needle" + "abcdefghijklmnopqrstuvwxyz"
 	m := sized(New(items(long), "'needle", "SIGKILL", noReload))
-	view := plain(m.View())
+	view := plain(m.render())
 	if !strings.Contains(view, "needleabcdefghij··") {
 		t.Errorf("shifted line does not keep 10 columns after the match:\n%s", view)
 	}
@@ -433,13 +442,13 @@ func TestShiftedLineKeepsTenColumnsAfterTheMatch(t *testing.T) {
 func TestShiftedLineShowsAShortTail(t *testing.T) {
 	long := "  101     1 alice    node            " + strings.Repeat("x", 100) + "needle tail"
 	m := sized(New(items(long), "'needle", "SIGKILL", noReload))
-	view := plain(m.View())
+	view := plain(m.render())
 	if !strings.Contains(view, "needle tail") || strings.Contains(view, "tail··") {
 		t.Errorf("shifted line does not end with the short tail:\n%s", view)
 	}
 }
 
-func editing(t *testing.T, want string, keys ...tea.KeyMsg) {
+func editing(t *testing.T, want string, keys ...tea.Msg) {
 	t.Helper()
 	m := sized(New(items("101 ruby a"), "", "SIGKILL", noReload))
 	m, _ = press(m, keys...)
@@ -451,13 +460,13 @@ func editing(t *testing.T, want string, keys ...tea.KeyMsg) {
 func TestLineEditingKeys(t *testing.T) {
 	left, right := key(tea.KeyLeft), key(tea.KeyRight)
 	t.Run("Ctrl-A moves to the start", func(t *testing.T) {
-		editing(t, "ruby", typed("uby"), key(tea.KeyCtrlA), typed("r"))
+		editing(t, "ruby", typed("uby"), ctrl('a'), typed("r"))
 	})
 	t.Run("Home moves to the start", func(t *testing.T) {
 		editing(t, "ruby", typed("uby"), key(tea.KeyHome), typed("r"))
 	})
 	t.Run("Ctrl-E moves to the end", func(t *testing.T) {
-		editing(t, "ruby", typed("rub"), key(tea.KeyCtrlA), key(tea.KeyCtrlE), typed("y"))
+		editing(t, "ruby", typed("rub"), ctrl('a'), ctrl('e'), typed("y"))
 	})
 	t.Run("End moves to the end", func(t *testing.T) {
 		editing(t, "ruby", typed("rub"), key(tea.KeyHome), key(tea.KeyEnd), typed("y"))
@@ -466,22 +475,22 @@ func TestLineEditingKeys(t *testing.T) {
 		editing(t, "ruby", typed("ry"), left, left, right, typed("ub"))
 	})
 	t.Run("Ctrl-B and Ctrl-F move by a character", func(t *testing.T) {
-		editing(t, "ruby", typed("ry"), key(tea.KeyCtrlB), key(tea.KeyCtrlB), key(tea.KeyCtrlF), typed("ub"))
+		editing(t, "ruby", typed("ry"), ctrl('b'), ctrl('b'), ctrl('f'), typed("ub"))
 	})
 	t.Run("Alt-B moves to the previous word", func(t *testing.T) {
 		editing(t, "node ruby", typed("node uby"), alt('b'), typed("r"))
 	})
 	t.Run("Alt-F moves past the next word", func(t *testing.T) {
-		editing(t, "nodes ruby", typed("node ruby"), key(tea.KeyCtrlA), alt('f'), typed("s"))
+		editing(t, "nodes ruby", typed("node ruby"), ctrl('a'), alt('f'), typed("s"))
 	})
 	t.Run("Ctrl-K deletes to the end", func(t *testing.T) {
-		editing(t, "ruby", typed("rubyxx"), left, left, key(tea.KeyCtrlK))
+		editing(t, "ruby", typed("rubyxx"), left, left, ctrl('k'))
 	})
 	t.Run("Ctrl-U deletes to the start", func(t *testing.T) {
-		editing(t, "ruby", typed("xxruby"), key(tea.KeyCtrlA), right, right, key(tea.KeyCtrlU))
+		editing(t, "ruby", typed("xxruby"), ctrl('a'), right, right, ctrl('u'))
 	})
 	t.Run("Ctrl-W deletes the previous word", func(t *testing.T) {
-		editing(t, "node ", typed("node ruby"), key(tea.KeyCtrlW))
+		editing(t, "node ", typed("node ruby"), ctrl('w'))
 	})
 	t.Run("Backspace deletes before the cursor", func(t *testing.T) {
 		editing(t, "ruby", typed("rubby"), left, left, key(tea.KeyBackspace))
@@ -490,14 +499,14 @@ func TestLineEditingKeys(t *testing.T) {
 		editing(t, "ruby", typed("ruxby"), left, left, left, key(tea.KeyDelete))
 	})
 	t.Run("typing inserts at the cursor", func(t *testing.T) {
-		editing(t, "ruby", typed("rby"), key(tea.KeyCtrlA), right, typed("u"))
+		editing(t, "ruby", typed("rby"), ctrl('a'), right, typed("u"))
 	})
 }
 
 func TestCaretIsDrawnAtTheCursor(t *testing.T) {
 	m := sized(New(items("101 ruby a"), "", "SIGKILL", noReload))
-	m, _ = press(m, typed("ruby"), key(tea.KeyCtrlA))
-	lines := strings.Split(m.View(), "\n")
+	m, _ = press(m, typed("ruby"), ctrl('a'))
+	lines := strings.Split(m.render(), "\n")
 	prompt := lines[len(lines)-1]
 	if !strings.Contains(prompt, "\x1b[7mr") {
 		t.Errorf("caret is not on the first character:\n%q", prompt)
@@ -509,36 +518,36 @@ func TestCaretIsDrawnAtTheCursor(t *testing.T) {
 
 func TestCtrlXTogglesExactMatching(t *testing.T) {
 	m := sized(New(items("101 ruby a", "202 resolve /usr/lib/systemd"), "ruby", "SIGKILL", noReload))
-	if strings.Contains(plain(m.View()), "[exact]") {
-		t.Errorf("fuzzy mode shows [exact]:\n%s", plain(m.View()))
+	if strings.Contains(plain(m.render()), "[exact]") {
+		t.Errorf("fuzzy mode shows [exact]:\n%s", plain(m.render()))
 	}
-	m, _ = press(m, key(tea.KeyCtrlX))
-	view := plain(m.View())
+	m, _ = press(m, ctrl('x'))
+	view := plain(m.render())
 	if strings.Contains(view, "resolve") || !strings.Contains(view, "[exact]") {
 		t.Errorf("Ctrl-X did not switch to exact matching:\n%s", view)
 	}
-	m, _ = press(m, key(tea.KeyCtrlX))
-	if !strings.Contains(plain(m.View()), "resolve") {
-		t.Errorf("second Ctrl-X did not switch back to fuzzy matching:\n%s", plain(m.View()))
+	m, _ = press(m, ctrl('x'))
+	if !strings.Contains(plain(m.render()), "resolve") {
+		t.Errorf("second Ctrl-X did not switch back to fuzzy matching:\n%s", plain(m.render()))
 	}
 }
 
 func TestWithExactStartsInExactMode(t *testing.T) {
 	m := sized(New(items("101 ruby a", "202 resolve /usr/lib/systemd"), "ruby", "SIGKILL", noReload).WithExact(true))
-	if strings.Contains(plain(m.View()), "resolve") {
-		t.Errorf("WithExact(true) still matches fuzzily:\n%s", plain(m.View()))
+	if strings.Contains(plain(m.render()), "resolve") {
+		t.Errorf("WithExact(true) still matches fuzzily:\n%s", plain(m.render()))
 	}
 }
 
 func TestAltATogglesEveryShownRow(t *testing.T) {
 	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", noReload))
 	m, _ = press(m, alt('a'))
-	if !strings.Contains(plain(m.View()), "(2)") {
-		t.Fatalf("first Alt-A did not select both rows:\n%s", plain(m.View()))
+	if !strings.Contains(plain(m.render()), "(2)") {
+		t.Fatalf("first Alt-A did not select both rows:\n%s", plain(m.render()))
 	}
 	m, _ = press(m, alt('a'))
-	if !strings.Contains(plain(m.View()), "(0)") {
-		t.Errorf("second Alt-A did not deselect both rows:\n%s", plain(m.View()))
+	if !strings.Contains(plain(m.render()), "(0)") {
+		t.Errorf("second Alt-A did not deselect both rows:\n%s", plain(m.render()))
 	}
 }
 
@@ -548,8 +557,8 @@ func TestPinnedRowKeepsTheLeadingColumns(t *testing.T) {
 	long := "  101     1 alice    node            " + strings.Repeat("x", 100) + " needle"
 	m := sized(New(items(long, "  202     1 bob      sleep           sleep 60"), "", "SIGKILL", noReload))
 	m, _ = press(m, key(tea.KeyTab), typed("'needle"))
-	if !strings.Contains(plain(m.View()), "┃  101     1 alice    node            ··") {
-		t.Errorf("pinned row lost its leading columns:\n%s", plain(m.View()))
+	if !strings.Contains(plain(m.render()), "┃  101     1 alice    node            ··") {
+		t.Errorf("pinned row lost its leading columns:\n%s", plain(m.render()))
 	}
 }
 
@@ -587,7 +596,7 @@ func TestGrowingTheTerminalShowsEveryRowThatFits(t *testing.T) {
 		m, _ = press(m, key(tea.KeyUp))
 	}
 	m = resized(m, 80, 40)
-	view := plain(m.View())
+	view := plain(m.render())
 	for _, l := range lines {
 		if !strings.Contains(view, l) {
 			t.Fatalf("row %q is hidden although all 30 rows fit:\n%s", l, view)
@@ -602,10 +611,10 @@ func TestTinyTerminalKeepsTheCursorRowVisible(t *testing.T) {
 		m := drawn(New(items("101 node a"), "", "SIGKILL", noReload), 80, height)
 		lines := viewLines(m)
 		if len(lines) > height {
-			t.Errorf("height %d: view has %d lines:\n%s", height, len(lines), plain(m.View()))
+			t.Errorf("height %d: view has %d lines:\n%s", height, len(lines), plain(m.render()))
 		}
-		if !strings.Contains(plain(m.View()), "101 node a") || !strings.HasPrefix(lines[len(lines)-1], ">") {
-			t.Errorf("height %d: cursor row or prompt missing:\n%s", height, plain(m.View()))
+		if !strings.Contains(plain(m.render()), "101 node a") || !strings.HasPrefix(lines[len(lines)-1], ">") {
+			t.Errorf("height %d: cursor row or prompt missing:\n%s", height, plain(m.render()))
 		}
 	}
 }
@@ -625,7 +634,7 @@ func TestEnterDoesNothingWithoutRoomForRows(t *testing.T) {
 // between pasted words means.
 func TestPastedControlCharactersBecomeSpaces(t *testing.T) {
 	m := sized(New(items("101 node a"), "", "SIGKILL", noReload))
-	m, _ = press(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("node\r\npy\x1b[31m"), Paste: true})
+	m, _ = press(m, tea.PasteMsg{Content: "node\r\npy\x1b[31m"})
 	if got := m.Query(); got != "node  py [31m" {
 		t.Errorf("Query() = %q, want control characters replaced with spaces", got)
 	}
@@ -636,13 +645,13 @@ func TestInitialQueryControlCharactersBecomeSpaces(t *testing.T) {
 	if got := m.Query(); got != "node python" {
 		t.Errorf("Query() = %q, want \"node python\"", got)
 	}
-	if strings.Contains(plain(m.View()), "101 node a") {
-		t.Errorf("initial query not applied as \"node python\":\n%s", plain(m.View()))
+	if strings.Contains(plain(m.render()), "101 node a") {
+		t.Errorf("initial query not applied as \"node python\":\n%s", plain(m.render()))
 	}
 }
 
 func promptLine(m Model) string {
-	lines := strings.Split(m.View(), "\n")
+	lines := strings.Split(m.render(), "\n")
 	return lines[len(lines)-1]
 }
 
@@ -657,7 +666,7 @@ func TestLongQueryKeepsTheCaretVisible(t *testing.T) {
 	if !strings.Contains(plain(prompt), "END") || !strings.Contains(prompt, "\x1b[7m ") {
 		t.Errorf("prompt does not show the end of the query and the caret: %q", prompt)
 	}
-	m, _ = press(m, key(tea.KeyCtrlA))
+	m, _ = press(m, ctrl('a'))
 	prompt = promptLine(m)
 	if !strings.HasPrefix(plain(prompt), "> aaa") || !strings.Contains(prompt, "\x1b[7ma") || ansi.StringWidth(prompt) > 20 {
 		t.Errorf("after Ctrl-A, prompt does not show the start with the caret: %q", prompt)
@@ -684,11 +693,11 @@ func TestOneLineTerminalDrawsOnlyThePrompt(t *testing.T) {
 func TestInfoLineCountsKeptSelectionsInTheTotal(t *testing.T) {
 	reload := func() ([]picker.Item, error) { return items("202 python b"), nil }
 	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", reload))
-	m, cmd := press(m, key(tea.KeyTab), key(tea.KeyCtrlR))
+	m, cmd := press(m, key(tea.KeyTab), ctrl('r'))
 	next, _ := m.Update(cmd())
 	m = next.(Model)
-	if !strings.Contains(plain(m.View()), "2/2 (1)") {
-		t.Errorf("info line after the selected process exited, want \"2/2 (1)\":\n%s", plain(m.View()))
+	if !strings.Contains(plain(m.render()), "2/2 (1)") {
+		t.Errorf("info line after the selected process exited, want \"2/2 (1)\":\n%s", plain(m.render()))
 	}
 }
 
@@ -697,7 +706,7 @@ func TestInfoLineCountsKeptSelectionsInTheTotal(t *testing.T) {
 func TestQueryThatFitsIsNotCutInsideAnEmoji(t *testing.T) {
 	query := "a👨‍👩‍👧‍👦END"
 	m := drawn(New(nil, query, "SIGKILL", noReload), 8, 8)
-	m, _ = press(m, key(tea.KeyCtrlA))
+	m, _ = press(m, ctrl('a'))
 	if got := plain(promptLine(m)); got != "> "+query {
 		t.Errorf("prompt = %q, want %q", got, "> "+query)
 	}
@@ -709,11 +718,11 @@ func TestHelpReplacesTheHeader(t *testing.T) {
 	m := drawn(New(items("101 node a"), "", "SIGKILL", noReload), 80, 22)
 	m, _ = press(m, alt('h'))
 	lines := viewLines(m)
-	if strings.Contains(plain(m.View()), "Alt-H help") {
-		t.Errorf("header is shown with the help:\n%s", plain(m.View()))
+	if strings.Contains(plain(m.render()), "Alt-H help") {
+		t.Errorf("header is shown with the help:\n%s", plain(m.render()))
 	}
 	if len(lines) != 22 || !strings.Contains(lines[len(lines)-3], "case sensitive") {
-		t.Errorf("help does not fill the header's line in a 22-line view:\n%s", plain(m.View()))
+		t.Errorf("help does not fill the header's line in a 22-line view:\n%s", plain(m.render()))
 	}
 }
 
@@ -722,8 +731,8 @@ func TestHelpReplacesTheHeader(t *testing.T) {
 func TestHelpExplainsTheQuerySyntax(t *testing.T) {
 	m := drawn(New(items("101 node a"), "", "SIGKILL", noReload), 80, 22)
 	m, _ = press(m, alt('h'))
-	view := plain(m.View())
-	for _, want := range []string{"Tab", "close this help", "'node", "'node'", "^node", ".js$", "!node", "a | b", "a b", "case sensitive"} {
+	view := plain(m.render())
+	for _, want := range []string{"Tab", "Ctrl-Z", "close this help", "'node", "'node'", "^node", ".js$", "!node", "a | b", "a b", "case sensitive"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("help on a 22-line terminal does not mention %q:\n%s", want, view)
 		}
@@ -748,7 +757,7 @@ func TestHelpSeparatesKeysFromTheQuerySyntax(t *testing.T) {
 func TestAltASelectsOnlyTheRowsOnScreen(t *testing.T) {
 	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload), 80, 24)
 	m, _ = press(m, alt('a'), key(tea.KeyEnter))
-	view := plain(m.View())
+	view := plain(m.render())
 	for _, target := range targetTexts(m) {
 		if !strings.Contains(view, target) {
 			t.Errorf("target %q is not on screen:\n%s", target, view)
@@ -788,7 +797,7 @@ func TestAltAKeepsTheRowsItSelectedOnScreen(t *testing.T) {
 		m, _ = press(m, key(tea.KeyUp))
 	}
 	m, _ = press(m, alt('a'))
-	view := plain(m.View())
+	view := plain(m.render())
 	for _, r := range m.picker.Rows() {
 		if r.Selected && !strings.Contains(view, r.Item.Text) {
 			t.Errorf("selected row %q is off screen after Alt-A:\n%s", r.Item.Text, view)
@@ -806,7 +815,7 @@ func TestAltAKeepsTheRowsItSelectedOnScreen(t *testing.T) {
 func TestEnterSignalsOnlyTheSelectedRowsOnScreen(t *testing.T) {
 	var r recorder
 	m := offscreenSelections(&r)
-	before := plain(m.View())
+	before := plain(m.render())
 	m, _ = press(m, key(tea.KeyEnter))
 	if m.Outcome() != Running {
 		t.Fatalf("Enter with selections off screen: Outcome() = %v, want Running", m.Outcome())
@@ -814,7 +823,7 @@ func TestEnterSignalsOnlyTheSelectedRowsOnScreen(t *testing.T) {
 	if len(r.sent) != 1 || len(r.sent[0]) == 0 {
 		t.Fatalf("sent = %v, want one batch", r.sent)
 	}
-	after := plain(m.View())
+	after := plain(m.render())
 	for _, s := range r.sent[0] {
 		if !strings.Contains(before, s) {
 			t.Errorf("signalled %q, which was off screen:\n%s", s, before)
@@ -836,7 +845,7 @@ func TestEnterRepeatedSignalsEverySelectionOnce(t *testing.T) {
 	var all []string
 	for range 10 {
 		m = settled(m)
-		view := plain(m.View())
+		view := plain(m.render())
 		m, _ = press(m, key(tea.KeyEnter))
 		var batch []string
 		if m.Outcome() == Accepted {
@@ -874,10 +883,10 @@ func partlySent(t *testing.T) Model {
 // running, so kil asks first.
 func TestEscAfterAPartialEnterAsks(t *testing.T) {
 	m, cmd := press(partlySent(t), key(tea.KeyEsc))
-	if m.Outcome() != Running || cmd != nil || !strings.Contains(plain(m.View()), "[Y/n]") {
-		t.Fatalf("Esc after a partial Enter: Outcome() = %v, want Running and a [Y/n] question:\n%s", m.Outcome(), plain(m.View()))
+	if m.Outcome() != Running || cmd != nil || !strings.Contains(plain(m.render()), "[Y/n]") {
+		t.Fatalf("Esc after a partial Enter: Outcome() = %v, want Running and a [Y/n] question:\n%s", m.Outcome(), plain(m.render()))
 	}
-	for _, k := range []tea.KeyMsg{typed("y"), typed("Y"), key(tea.KeyEnter)} {
+	for _, k := range []tea.KeyPressMsg{typed("y"), typed("Y"), key(tea.KeyEnter)} {
 		m, _ := press(partlySent(t), key(tea.KeyEsc), k)
 		if m.Outcome() != Stopped || len(m.Left()) == 0 {
 			t.Errorf("%v: Outcome() = %v, Left() = %v; want Stopped with the selections left", k, m.Outcome(), m.Left())
@@ -892,13 +901,13 @@ func TestNoKeepsKilOpenWithTheSelections(t *testing.T) {
 	if m.Outcome() != Running || cmd != nil || m.picker.SelectedCount() != selected {
 		t.Errorf("n: Outcome() = %v, SelectedCount() = %d; want Running with %d selected", m.Outcome(), m.picker.SelectedCount(), selected)
 	}
-	if strings.Contains(plain(m.View()), "[Y/n]") {
-		t.Errorf("question still shown after n:\n%s", plain(m.View()))
+	if strings.Contains(plain(m.render()), "[Y/n]") {
+		t.Errorf("question still shown after n:\n%s", plain(m.render()))
 	}
 }
 
 func TestCtrlCAfterAPartialEnterAbortsWithoutAsking(t *testing.T) {
-	m, _ := press(partlySent(t), key(tea.KeyCtrlC))
+	m, _ := press(partlySent(t), ctrl('c'))
 	if m.Outcome() != Aborted {
 		t.Errorf("Ctrl-C after a partial Enter: Outcome() = %v, want Aborted", m.Outcome())
 	}
@@ -929,8 +938,8 @@ func TestEnterBringsSelectionsOnScreenWhenNoneAreShown(t *testing.T) {
 		m, _ = press(m, key(tea.KeyUp))
 	}
 	m, _ = press(m, key(tea.KeyEnter))
-	if !strings.Contains(plain(m.View()), "▌┃100 proc") && !strings.Contains(plain(m.View()), "┃100 proc") {
-		t.Fatalf("selected row not brought on screen:\n%s", plain(m.View()))
+	if !strings.Contains(plain(m.render()), "▌┃100 proc") && !strings.Contains(plain(m.render()), "┃100 proc") {
+		t.Fatalf("selected row not brought on screen:\n%s", plain(m.render()))
 	}
 	m, _ = press(settled(m), key(tea.KeyEnter))
 	if m.Outcome() != Accepted || !slices.Equal(targetTexts(m), []string{"100 proc"}) {
@@ -953,7 +962,7 @@ func TestAltAShowsTheRowsItJustSelected(t *testing.T) {
 		was[r.Item.Text] = r.Selected
 	}
 	m, _ = press(m, alt('a'))
-	view := plain(m.View())
+	view := plain(m.render())
 	var added []string
 	for _, r := range m.picker.Rows() {
 		if r.Selected && !was[r.Item.Text] {
@@ -985,7 +994,7 @@ func settled(m Model) Model {
 // the outcome is decided must not change it or signal anything.
 func TestKeysAfterTheOutcomeIsDecidedAreIgnored(t *testing.T) {
 	var r recorder
-	m, _ := press(offscreenSelections(&r), key(tea.KeyCtrlC), key(tea.KeyEnter))
+	m, _ := press(offscreenSelections(&r), ctrl('c'), key(tea.KeyEnter))
 	if m.Outcome() != Aborted || len(r.sent) != 0 {
 		t.Errorf("Ctrl-C then Enter: Outcome() = %v, sent %v; want Aborted and nothing sent", m.Outcome(), r.sent)
 	}
@@ -1016,6 +1025,11 @@ func TestEnterRightAfterSelectionsComeOnScreenWaits(t *testing.T) {
 			return m
 		},
 		"growing the terminal": func(m Model) Model { return resized(m, 80, 24) },
+		// After fg, Bubble Tea draws the whole screen again.
+		"resuming after Ctrl-Z": func(m Model) Model {
+			m, _ = press(m, tea.ResumeMsg{})
+			return m
+		},
 	}
 	for name, f := range bring {
 		var r recorder
@@ -1042,8 +1056,8 @@ func TestEnterRightAfterSelectionsComeOnScreenWaits(t *testing.T) {
 // keeps its default size rather than drawing no row, so Enter still works.
 func TestZeroTerminalSizeKeepsTheDefaultSize(t *testing.T) {
 	m := drawn(New(items("101 node a"), "", "SIGKILL", noReload), 0, 0)
-	if !strings.Contains(plain(m.View()), "101 node a") {
-		t.Errorf("row not drawn with a 0x0 size:\n%s", plain(m.View()))
+	if !strings.Contains(plain(m.render()), "101 node a") {
+		t.Errorf("row not drawn with a 0x0 size:\n%s", plain(m.render()))
 	}
 	m, _ = press(m, key(tea.KeyEnter))
 	if m.Outcome() != Accepted {
@@ -1089,7 +1103,7 @@ func TestOneZeroDimensionStillApplies(t *testing.T) {
 	if m.Outcome() != Running {
 		t.Errorf("Enter on a 1-line terminal reported as 0x1: Outcome() = %v, want Running", m.Outcome())
 	}
-	if lines := strings.Count(m.View(), "\n") + 1; lines != 1 {
+	if lines := strings.Count(m.render(), "\n") + 1; lines != 1 {
 		t.Errorf("view has %d lines on a 1-line terminal, want 1", lines)
 	}
 }
@@ -1127,11 +1141,11 @@ func TestEachRowWaitsOnlyForItself(t *testing.T) {
 	m, _ = press(m, key(tea.KeyTab))
 	m = resized(resized(m, 80, 1), 80, 6)
 	selectedGen := m.settleGen
-	m, cmd := press(m, key(tea.KeyCtrlR))
+	m, cmd := press(m, ctrl('r'))
 	nm, _ := m.Update(cmd())
 	m = nm.(Model)
 	if m.settleGen == selectedGen {
-		t.Fatalf("the reloaded row started no wait:\n%s", plain(m.View()))
+		t.Fatalf("the reloaded row started no wait:\n%s", plain(m.render()))
 	}
 	nm, _ = m.Update(settledMsg{gen: selectedGen})
 	m, _ = press(nm.(Model), key(tea.KeyEnter))
@@ -1152,5 +1166,24 @@ func TestEnterRightAfterStartInExactModeWaits(t *testing.T) {
 	m, _ = press(settled(m), key(tea.KeyEnter))
 	if !slices.Equal(targetTexts(m), []string{"101 a_b"}) {
 		t.Errorf("Enter after the first frame: Targets() = %v, want 101 a_b", targetTexts(m))
+	}
+}
+
+// Ctrl-Z suspends kil as it would a shell job, even while the help or the
+// question is shown, as Ctrl-C aborts there too.
+func TestCtrlZSuspends(t *testing.T) {
+	list := sized(New(items("101 node a"), "", "SIGKILL", noReload))
+	help, _ := press(list, alt('h'))
+	question, _ := press(partlySent(t), key(tea.KeyEsc))
+	for name, m := range map[string]Model{"list": list, "help": help, "question": question} {
+		next, cmd := press(m, ctrl('z'))
+		// The command is compared rather than run, as another command,
+		// such as a wait, would block.
+		if cmd == nil || reflect.ValueOf(cmd).Pointer() != reflect.ValueOf(tea.Suspend).Pointer() {
+			t.Errorf("Ctrl-Z in the %s: command is not tea.Suspend", name)
+		}
+		if next.Outcome() != Running || next.help != m.help || next.confirming != m.confirming {
+			t.Errorf("Ctrl-Z in the %s changed the picker: Outcome() = %v, help %v, confirming %v", name, next.Outcome(), next.help, next.confirming)
+		}
 	}
 }

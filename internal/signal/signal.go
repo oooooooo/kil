@@ -61,6 +61,9 @@ const (
 	// Failed means the process was there but could not be signalled, e.g.
 	// for lack of permission.
 	Failed
+	// Cancelled means the caller stopped signalling before the signal was
+	// sent.
+	Cancelled
 )
 
 func (o Outcome) String() string {
@@ -69,6 +72,8 @@ func (o Outcome) String() string {
 		return "sent"
 	case Skipped:
 		return "skipped"
+	case Cancelled:
+		return "cancelled"
 	default:
 		return "failed"
 	}
@@ -76,17 +81,28 @@ func (o Outcome) String() string {
 
 // Send signals pid only if current(pid) still returns want, the line the
 // user selected, so that a process that exited and whose PID was reused by
-// an unrelated process is not signalled.
-func Send(pid int, sig syscall.Signal, want string, current func(int) (string, bool)) Outcome {
+// an unrelated process is not signalled. stopped, if not nil, is asked
+// after that check, right before the signal is sent, as the check can take
+// a while.
+func Send(pid int, sig syscall.Signal, want string, current func(int) (string, bool), stopped func() bool) Outcome {
 	// kill(2) treats 0 and negative PIDs as process groups, and -1 as every
 	// process the user may signal.
 	if pid <= 0 {
 		return Skipped
 	}
-	return send(pid, sig, func() bool {
+	cancelled := false
+	outcome := send(pid, sig, func() bool {
 		line, ok := current(pid)
-		return ok && line == want
+		if !ok || line != want {
+			return false
+		}
+		cancelled = stopped != nil && stopped()
+		return !cancelled
 	})
+	if cancelled {
+		return Cancelled
+	}
+	return outcome
 }
 
 func outcomeOf(err error) Outcome {

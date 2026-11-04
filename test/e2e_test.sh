@@ -74,6 +74,9 @@ type_query() {
 }
 
 finish() {
+  # Enter is ignored for 300 ms after a selected row comes on screen, as kil
+  # cannot know before then that the terminal shows it.
+  sleep 0.5
   tmux send-keys -t "$SESSION" Enter
   wait_until grep -q -- "kil finished" "$OUT"
   tmux kill-session -t "$SESSION" 2>/dev/null || true

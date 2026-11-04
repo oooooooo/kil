@@ -67,7 +67,8 @@ instead. The info line shows `[exact]` in this mode.
 | `Ctrl-R` | Refresh the process list, keeping your query and selections |
 | `Enter` | Kill the selected processes, or the one under the cursor if none are selected. Only processes on screen are killed: if some selected ones are off screen, `kil` stays open with them brought on screen, and `Enter` again kills them |
 | `Ctrl-C` / `Esc` | Abort. After `Enter` killed only part of the selection, `Esc` asks before leaving the rest (`Y` / `Enter` to leave, `n` to stay) |
-| `Alt-H` | Show every key in place of the list. Any key other than `Ctrl-C`, including `Esc`, only closes it |
+| `Ctrl-Z` | Suspend `kil` as a shell job; `fg` brings it back. Does nothing when `kil` was not started from a shell, as with `tmux new-session kil` |
+| `Alt-H` | Show every key in place of the list. Any key other than `Ctrl-C` and `Ctrl-Z`, including `Esc`, only closes it |
 
 The query is edited with readline's keys: `Ctrl-A` / `Ctrl-E` (or `Home` /
 `End`) move to the start / end, `Ctrl-B` / `Ctrl-F` (or `Left` / `Right`) and
@@ -86,6 +87,7 @@ Each result is reported as `sent SIGKILL:` (or whichever signal you chose),
 | `1` | Nothing was selected, some processes were skipped or failed, or selected processes were left unsignalled |
 | `2` | Usage error, invalid `KIL_SIGNAL` or `KIL_EXACT`, listing processes failed, or no terminal |
 | `130` | Aborted with `Ctrl-C` / `Esc` |
+| `128`+n | Ended by signal n: `129` for `SIGHUP`, `131` for `SIGQUIT`, `143` for `SIGTERM`. A `SIGINT`, `SIGTERM`, or `SIGQUIT` while `kil` is sending signals stops it, and the processes not reached are reported as `skipped:`; `SIGHUP` does not |
 
 ## Configuration
 

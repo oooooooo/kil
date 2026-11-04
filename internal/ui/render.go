@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/mattn/go-runewidth"
 	"github.com/rivo/uniseg"
 
@@ -143,9 +144,17 @@ func (m Model) shownRows() (from, to int) {
 	return min(from, to), to
 }
 
-// View implements tea.Model. Like fzf's default layout, the prompt is at the
+// View implements tea.Model. kil takes the whole screen, as fzf does, and
+// gives it back when it ends.
+func (m Model) View() tea.View {
+	v := tea.NewView(m.render())
+	v.AltScreen = true
+	return v
+}
+
+// render draws the screen. Like fzf's default layout, the prompt is at the
 // bottom and the list grows upward, best match first.
-func (m Model) View() string {
+func (m Model) render() string {
 	rows := m.picker.Rows()
 	body, cursorLine := m.layout()
 	height := m.bodyHeight()
@@ -214,14 +223,14 @@ func (m Model) View() string {
 func (m Model) helpLines(height int) []string {
 	entries := [][2]string{
 		{"Keys", ""},
-		{"Tab", "select or deselect, then move down"},
-		{"Shift-Tab", "select or deselect, then move up"},
+		{"Tab / Shift-Tab", "select or deselect, then move down / up"},
 		{"Alt-A", "select all shown, or deselect them"},
 		{"Enter", "send " + m.label + " to the selected lines, or the current line"},
 		{"Up / Down", "move (also Ctrl-P / Ctrl-N)"},
 		{"Ctrl-X", "toggle exact match"},
 		{"Ctrl-R", "refresh the process list"},
 		{"Esc / Ctrl-C", "abort without sending anything"},
+		{"Ctrl-Z", "suspend kil as a shell job (fg resumes it)"},
 		{"any key", "close this help (Ctrl-C aborts)"},
 		// The query syntax is fzf's, which users who do not use fzf
 		// cannot guess. The blank line and the headings set it apart from

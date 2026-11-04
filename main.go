@@ -10,9 +10,10 @@ import (
 	ossignal "os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/oooooooo/kil/internal/picker"
 	"github.com/oooooooo/kil/internal/proc"
@@ -35,11 +36,12 @@ Environment:
   KIL_EXACT    Set to 1 to start in exact mode, as with -e
 
 Exit status:
-  0    every selected process was signalled
-  1    nothing was selected, or some processes were skipped or failed
-  2    usage error, invalid KIL_SIGNAL or KIL_EXACT, listing processes failed,
-       or no terminal
-  130  aborted with Ctrl-C / Esc
+  0      every selected process was signalled
+  1      nothing was selected, or some processes were skipped or failed
+  2      usage error, invalid KIL_SIGNAL or KIL_EXACT, listing processes
+         failed, or no terminal
+  130    aborted with Ctrl-C / Esc
+  128+n  ended by signal n: 129 for SIGHUP, 131 for SIGQUIT, 143 for SIGTERM
 `
 
 const (
@@ -143,16 +145,18 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return exitError
 	}
 
+	// Until now, signals take their default action: nothing has been
+	// signalled and the terminal is as it was, and a ps that hangs cannot
+	// keep kil from ending.
+	in := watchSignals()
+	defer in.close()
+
 	sent := &batches{}
-	send := func(batch []picker.Item) {
-		sent.code = max(sent.code, signalAll(batch, sig, sent.stdout(), sent.stderr()))
-		sent.sent += len(batch)
-	}
-	model, err := pick(ui.New(items, opts.query, signal.Label(sig), list).WithExact(opts.exact || envExact).WithSender(send))
+	model, err := pick(ui.New(items, opts.query, signal.Label(sig), list).WithExact(opts.exact || envExact).WithSender(sender(sent, sig, in)), in)
 	if err != nil {
 		return pickFailed(sent, err, stdout, stderr)
 	}
-	return finish(model, sig, sent, stdout, stderr)
+	return finish(model, sig, sent, stdout, stderr, in)
 }
 
 // pickFailed reports a picker failure after the reports of the rows already
@@ -216,9 +220,14 @@ func (b *batches) signalled() string {
 	return "nothing was signalled"
 }
 
-// finish reports how the picker ended and signals what it accepted.
-func finish(model ui.Model, sig syscall.Signal, sent *batches, stdout, stderr io.Writer) int {
+// finish reports how the picker ended and signals what it accepted, unless
+// a signal was caught first.
+func finish(model ui.Model, sig syscall.Signal, sent *batches, stdout, stderr io.Writer, in *interrupts) int {
 	sent.flush(stdout, stderr)
+	if code, ok := in.ended(); ok {
+		// Like Ctrl-C, a signal ends kil without signalling the rest.
+		return code
+	}
 	switch model.Outcome() {
 	case ui.Aborted:
 		// The user chose to leave, so there is nothing more to report.
@@ -243,18 +252,65 @@ func finish(model ui.Model, sig syscall.Signal, sent *batches, stdout, stderr io
 		return exitError
 	}
 
-	return max(sent.code, signalAll(model.Targets(), sig, stdout, stderr))
+	code := signalAll(model.Targets(), sig, stdout, stderr, in)
+	if in.stopping() != nil {
+		return code
+	}
+	return max(sent.code, code)
 }
 
 // pick runs the picker on the controlling terminal, so that stdout and
-// stderr carry only the results and can be redirected, as with fzf.
-func pick(m ui.Model) (ui.Model, error) {
+// stderr carry only the results and can be redirected, as with fzf. A
+// signal caught ends the picker.
+func pick(m ui.Model, in *interrupts) (ui.Model, error) {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
 		return m, fmt.Errorf("no terminal: %w", err)
 	}
 	defer func() { _ = tty.Close() }()
-	final, err := tea.NewProgram(m, tea.WithInput(tty), tea.WithOutput(tty), tea.WithAltScreen()).Run()
+
+	// SIGTSTP from outside suspends kil as Ctrl-Z does. Left to its default
+	// action, it stopped kil with the terminal in raw mode.
+	tstp := make(chan os.Signal, 1)
+	ossignal.Notify(tstp, syscall.SIGTSTP)
+	defer ossignal.Stop(tstp)
+
+	var p *tea.Program
+	suspend := suspender{
+		in:         in,
+		canSuspend: jobControlled,
+		release:    func() error { return p.ReleaseTerminal() },
+		stop:       stopJob,
+		restore:    func() error { return p.RestoreTerminal() },
+	}
+	// Bubble Tea's own handler is replaced: it ended kil with an error on
+	// SIGINT, did not tell SIGTERM from Esc, and ignored SIGHUP.
+	p = tea.NewProgram(m, tea.WithInput(tty), tea.WithOutput(tty), tea.WithoutSignalHandler(), tea.WithFilter(suspend.filter))
+
+	// The goroutines only ask the picker to quit or suspend, and each waits
+	// on its own, so neither can keep the other waiting.
+	ended := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		select {
+		case <-in.whenCaught():
+			p.Quit()
+		case <-ended:
+		}
+	})
+	wg.Go(func() {
+		for {
+			select {
+			case <-tstp:
+				p.Send(tea.SuspendMsg{})
+			case <-ended:
+				return
+			}
+		}
+	})
+	final, err := p.Run()
+	close(ended)
+	wg.Wait()
 	if err != nil {
 		return m, fmt.Errorf("picker failed: %w", err)
 	}
@@ -265,27 +321,52 @@ func pick(m ui.Model) (ui.Model, error) {
 	return fm, nil
 }
 
-func signalAll(targets []picker.Item, sig syscall.Signal, stdout, stderr io.Writer) int {
+// signalAll signals targets and reports each result. SIGINT, SIGTERM, or
+// SIGQUIT stops it, as it would kill(1): the targets not signalled are
+// reported as skipped, and it returns the status for that signal. SIGHUP does
+// not stop it: the terminal hangs up when kil kills the shell it was started
+// from, which must not leave the rest of the selection unsignalled.
+func signalAll(targets []picker.Item, sig syscall.Signal, stdout, stderr io.Writer, in *interrupts) int {
+	stopped := func() bool { return in.stopping() != nil }
 	code := exitOK
-	for _, t := range targets {
+	for i, t := range targets {
+		if stopped() {
+			return skipRest(targets[i:], stderr, in)
+		}
 		var pid int
 		if _, err := fmt.Sscan(t.ID, &pid); err != nil {
 			reportf(stderr, "skipped: not a PID: %s\n", t.Text)
 			code = exitProblems
 			continue
 		}
-		switch signal.Send(pid, sig, t.ID, proc.Current) {
+		switch signal.Send(pid, sig, t.ID, currentLine, stopped) {
 		case signal.Sent:
 			reportf(stdout, "sent %s: %s\n", signal.Label(sig), t.Text)
 		case signal.Skipped:
 			reportf(stderr, "skipped: process changed or exited: %s\n", t.Text)
 			code = exitProblems
+		case signal.Cancelled:
+			return skipRest(targets[i:], stderr, in)
 		default:
 			reportf(stderr, "failed: %s\n", t.Text)
 			code = exitProblems
 		}
 	}
+	// A signal that came as the last process was signalled still ends kil
+	// with its status.
+	if s := in.stopping(); s != nil {
+		return exitSignalled(s)
+	}
 	return code
+}
+
+// skipRest reports targets as not signalled after a signal stopped kil, and
+// returns the status for that signal.
+func skipRest(targets []picker.Item, stderr io.Writer, in *interrupts) int {
+	for _, t := range targets {
+		reportf(stderr, "skipped: not signalled: %s\n", t.Text)
+	}
+	return exitSignalled(in.stopping())
 }
 
 // The report helpers ignore write errors: the exit status already tells the

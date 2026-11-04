@@ -5,7 +5,7 @@ import (
 	"maps"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/oooooooo/kil/internal/picker"
 )
@@ -55,9 +55,10 @@ type Model struct {
 	// may not be on the terminal yet, and Enter waits rather than signal a
 	// row the user may not have seen. Each change that brings rows on screen
 	// starts a wait numbered settleGen. fresh maps each such row to the wait
-	// that ends its own, and helpGen is the wait after the help closed.
+	// that ends its own, and redrawGen is the wait after the whole screen
+	// was drawn again, as when the help closed or kil resumed after Ctrl-Z.
 	fresh     map[string]int
-	helpGen   int
+	redrawGen int
 	settleGen int
 }
 
@@ -153,14 +154,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if nm.outcome != Running {
 		return nm, cmd
 	}
-	helpClosed := m.help && !nm.help
+	_, resumed := msg.(tea.ResumeMsg)
+	redrawn := resumed || m.help && !nm.help
 	var came []string
 	for id := range nm.drawnIDs() {
 		if !drawn[id] {
 			came = append(came, id)
 		}
 	}
-	if !helpClosed && len(came) == 0 {
+	if !redrawn && len(came) == 0 {
 		return nm, cmd
 	}
 	nm.settleGen++
@@ -173,8 +175,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		fresh[id] = nm.settleGen
 	}
 	nm.fresh = fresh
-	if helpClosed {
-		nm.helpGen = nm.settleGen
+	if redrawn {
+		nm.redrawGen = nm.settleGen
 	}
 	return nm, tea.Batch(cmd, nm.settleAfter(nm.settleGen))
 }
@@ -194,12 +196,12 @@ func (m Model) drawnIDs() map[string]bool {
 	return drawn
 }
 
-// waiting reports whether Enter must wait because the help has just closed
-// or a selected row on screen has just come on screen. The cursor row alone
+// waiting reports whether Enter must wait because the whole screen has just
+// been drawn again or a selected row on screen has just come on screen. The cursor row alone
 // does not wait, so that typing a query and pressing Enter at once still
 // works, as in fzf.
 func (m Model) waiting() bool {
-	if m.helpGen > 0 {
+	if m.redrawGen > 0 {
 		return true
 	}
 	shown, _ := m.selectedOnScreen()
@@ -227,8 +229,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case settledMsg:
 		// Waits end in the order they started, so this ends every
 		// earlier one as well.
-		if m.helpGen <= msg.gen {
-			m.helpGen = 0
+		if m.redrawGen <= msg.gen {
+			m.redrawGen = 0
 		}
 		m.fresh = maps.Clone(m.fresh)
 		maps.DeleteFunc(m.fresh, func(_ string, gen int) bool { return gen <= msg.gen })
@@ -245,43 +247,45 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 		m.picker.Reload(msg.items)
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+	case tea.PasteMsg:
+		// A paste only edits the query: it must not answer the question
+		// or close the help, which the user did not see it do.
+		if !m.confirming && !m.help {
+			m.edit(func(in *lineInput) { in.insert([]rune(msg.Content)) })
+		}
 	}
 	return m, nil
 }
 
-func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	key := k.String()
+	// Ctrl-Z suspends kil as a shell job, in the help and the question too,
+	// as Ctrl-C aborts there.
+	if key == "ctrl+z" {
+		return m, tea.Suspend
+	}
 	if m.confirming {
-		return m.confirm(k)
+		return m.confirm(key)
 	}
 	// The help hides the rows, so a key other than Ctrl-C only closes it:
 	// Enter must not signal a row the user cannot see, and Esc goes back to
 	// the list rather than leaving kil.
-	if m.help && k.Type != tea.KeyCtrlC {
+	if m.help && key != "ctrl+c" {
 		m.help = false
 		return m, nil
 	}
-	if k.Alt && k.Type == tea.KeyRunes && len(k.Runes) == 1 {
-		switch k.Runes[0] {
-		case 'a':
-			added := m.picker.ToggleRange(m.shownRows())
-			// The rows Alt-A selected are now pinned at the bottom of the
-			// list, so the window goes to them to keep them on screen.
-			m.offset = m.firstLineOf(added)
-		case 'b':
-			m.input.wordLeft()
-		case 'f':
-			m.input.wordRight()
-		case 'h':
-			m.help = true
-		}
-		return m, nil
-	}
 
-	before := m.input.String()
-	switch k.Type {
-	case tea.KeyEsc:
+	switch key {
+	case "alt+a":
+		added := m.picker.ToggleRange(m.shownRows())
+		// The rows Alt-A selected are now pinned at the bottom of the
+		// list, so the window goes to them to keep them on screen.
+		m.offset = m.firstLineOf(added)
+	case "alt+h":
+		m.help = true
+	case "esc":
 		// After a partial Enter, leaving would leave chosen processes
 		// running, so Esc asks first.
 		if m.sent > 0 && m.picker.SelectedCount() > 0 {
@@ -290,10 +294,10 @@ func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.outcome = Aborted
 		return m, tea.Quit
-	case tea.KeyCtrlC:
+	case "ctrl+c":
 		m.outcome = Aborted
 		return m, tea.Quit
-	case tea.KeyEnter:
+	case "enter":
 		// Without room for rows, the cursor row is not on screen.
 		if m.reloading || m.waiting() || m.bodyHeight() == 0 {
 			return m, nil
@@ -309,18 +313,18 @@ func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	// The list grows upward from the prompt, as in fzf's default layout, so
 	// moving up on screen goes to the next row and down to the previous.
-	case tea.KeyUp, tea.KeyCtrlP:
+	case "up", "ctrl+p":
 		m.picker.Next()
-	case tea.KeyDown, tea.KeyCtrlN, tea.KeyCtrlJ:
+	case "down", "ctrl+n", "ctrl+j":
 		m.picker.Prev()
-	case tea.KeyTab:
+	case "tab":
 		m.picker.Toggle(-1) // fzf's toggle+down
-	case tea.KeyShiftTab:
+	case "shift+tab":
 		m.picker.Toggle(1) // fzf's toggle+up
-	case tea.KeyCtrlX:
+	case "ctrl+x":
 		m.picker.SetExact(!m.picker.Exact())
 		m.offset = 0
-	case tea.KeyCtrlR:
+	case "ctrl+r":
 		if m.reloading {
 			return m, nil
 		}
@@ -330,38 +334,59 @@ func (m Model) handleKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			items, err := reload()
 			return reloadMsg{items, err}
 		}
-
-	// The query is edited with readline's keys.
-	case tea.KeyCtrlA, tea.KeyHome:
-		m.input.home()
-	case tea.KeyCtrlE, tea.KeyEnd:
-		m.input.end()
-	case tea.KeyLeft, tea.KeyCtrlB:
-		m.input.left()
-	case tea.KeyRight, tea.KeyCtrlF:
-		m.input.right()
-	case tea.KeyBackspace, tea.KeyCtrlH:
-		m.input.backspace()
-	case tea.KeyDelete:
-		m.input.deleteChar()
-	case tea.KeyCtrlK:
-		m.input.killToEnd()
-	case tea.KeyCtrlU:
-		m.input.killToStart()
-	case tea.KeyCtrlW:
-		m.input.killWordBack()
-	case tea.KeySpace:
-		m.input.insert([]rune{' '})
-	case tea.KeyRunes:
-		m.input.insert(k.Runes)
+	default:
+		if edit := lineEdit(k); edit != nil {
+			m.edit(edit)
+		}
 	}
-	// Moving the caret keeps the list as it is; only a changed query filters
-	// again and moves the cursor back to the best match.
+	return m, nil
+}
+
+// lineEdit returns how k edits the query with readline's keys, or nil if k
+// does not edit it.
+func lineEdit(k tea.KeyPressMsg) func(*lineInput) {
+	switch k.String() {
+	case "ctrl+a", "home":
+		return (*lineInput).home
+	case "ctrl+e", "end":
+		return (*lineInput).end
+	case "left", "ctrl+b":
+		return (*lineInput).left
+	case "right", "ctrl+f":
+		return (*lineInput).right
+	case "alt+b":
+		return (*lineInput).wordLeft
+	case "alt+f":
+		return (*lineInput).wordRight
+	case "backspace", "ctrl+h":
+		return (*lineInput).backspace
+	case "delete":
+		return (*lineInput).deleteChar
+	case "ctrl+k":
+		return (*lineInput).killToEnd
+	case "ctrl+u":
+		return (*lineInput).killToStart
+	case "ctrl+w":
+		return (*lineInput).killWordBack
+	}
+	// Text typed with Ctrl or Alt is a key binding kil does not have, not
+	// text for the query.
+	if k.Text != "" && k.Mod&(tea.ModCtrl|tea.ModAlt) == 0 {
+		return func(in *lineInput) { in.insert([]rune(k.Text)) }
+	}
+	return nil
+}
+
+// edit applies f to the query. Moving the caret keeps the list as it is;
+// only a changed query filters again and moves the cursor back to the best
+// match.
+func (m *Model) edit(f func(*lineInput)) {
+	before := m.input.String()
+	f(&m.input)
 	if m.input.String() != before {
 		m.picker.SetQuery(m.input.String())
 		m.offset = 0
 	}
-	return m, nil
 }
 
 // selectedOnScreen returns the selected rows drawn on screen, and whether
@@ -405,16 +430,16 @@ const settleTime = 300 * time.Millisecond
 
 // confirm answers Esc's question about leaving selections not signalled:
 // Y or Enter leaves, and n or Esc goes back to the list. Ctrl-C still aborts.
-func (m Model) confirm(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case k.Type == tea.KeyCtrlC:
+func (m Model) confirm(key string) (tea.Model, tea.Cmd) {
+	switch key {
+	case "ctrl+c":
 		m.outcome = Aborted
 		return m, tea.Quit
-	case k.Type == tea.KeyEnter, k.String() == "y", k.String() == "Y":
+	case "enter", "y", "Y":
 		m.left = m.picker.Targets()
 		m.outcome = Stopped
 		return m, tea.Quit
-	case k.Type == tea.KeyEsc, k.String() == "n", k.String() == "N":
+	case "esc", "n", "N":
 		m.confirming = false
 	}
 	return m, nil

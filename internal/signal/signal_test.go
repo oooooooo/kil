@@ -73,7 +73,7 @@ func fixed(line string, ok bool) func(int) (string, bool) {
 
 func TestSendSignalsWhenLineIsUnchanged(t *testing.T) {
 	cmd := startSleep(t)
-	got := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("the line", true))
+	got := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("the line", true), nil)
 	if got != Sent {
 		t.Fatalf("Send() = %v, want Sent", got)
 	}
@@ -84,7 +84,7 @@ func TestSendSignalsWhenLineIsUnchanged(t *testing.T) {
 
 func TestSendSkipsWhenLineChanged(t *testing.T) {
 	cmd := startSleep(t)
-	got := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("another line", true))
+	got := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("another line", true), nil)
 	if got != Skipped {
 		t.Errorf("Send() = %v, want Skipped", got)
 	}
@@ -98,7 +98,7 @@ func TestSendSkipsWhenProcessIsGone(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatal(err)
 	}
-	got := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("", false))
+	got := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("", false), nil)
 	if got != Skipped {
 		t.Errorf("Send() = %v, want Skipped", got)
 	}
@@ -107,8 +107,27 @@ func TestSendSkipsWhenProcessIsGone(t *testing.T) {
 func TestSendRefusesNonPositivePIDs(t *testing.T) {
 	for _, pid := range []int{0, -1} {
 		// Signal 0 so that a regression cannot hit a real process group.
-		if got := Send(pid, syscall.Signal(0), "x", fixed("x", true)); got != Skipped {
+		if got := Send(pid, syscall.Signal(0), "x", fixed("x", true), nil); got != Skipped {
 			t.Errorf("Send(%d) = %v, want Skipped", pid, got)
 		}
+	}
+}
+
+// kil stops signalling on SIGINT or SIGTERM. Checking the process can take a
+// while, as it runs ps, so a stop that arrives meanwhile must still keep the
+// signal from being sent.
+func TestSendCancelsWhenStoppedDuringTheCheck(t *testing.T) {
+	cmd := startSleep(t)
+	stopped := false
+	current := func(int) (string, bool) {
+		stopped = true
+		return "the line", true
+	}
+	got := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", current, func() bool { return stopped })
+	if got != Cancelled {
+		t.Errorf("Send() = %v, want Cancelled", got)
+	}
+	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Errorf("process was signalled: %v", err)
 	}
 }

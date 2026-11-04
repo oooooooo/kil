@@ -1187,3 +1187,22 @@ func TestCtrlZSuspends(t *testing.T) {
 		}
 	}
 }
+
+// Alt-A keeps every row it toggled on screen, the ones selected before it
+// too, so that pressing it again deselects them as AGENTS.md promises,
+// rather than select rows that came on screen as kil scrolled.
+func TestAltATwiceDeselectsRowsSelectedBefore(t *testing.T) {
+	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload), 80, 12)
+	m, _ = press(m, key(KeyTab, ModShift), key(KeyTab, ModShift))
+	if n := m.picker.SelectedCount(); n != 2 {
+		t.Fatalf("Shift-Tab twice selected %d rows, want 2", n)
+	}
+	m, _ = press(m, alt('a'))
+	if _, offscreen := m.selectedOnScreen(); offscreen {
+		t.Errorf("Alt-A left selected rows off screen:\n%s", plain(m.render()))
+	}
+	m, _ = press(m, alt('a'))
+	if n := m.picker.SelectedCount(); n != 0 {
+		t.Errorf("Alt-A again left %d rows selected, want 0:\n%s", n, plain(m.render()))
+	}
+}

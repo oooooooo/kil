@@ -87,7 +87,9 @@ Using fzf is fine, and so is writing it from scratch in Go.
   `Enter` at once works as in fzf. The picker ends as soon as the outcome is
   decided, and ignores anything handled after it, as `Ctrl-C` then `Enter`
   once signalled rows. `Alt-A` likewise selects only the rows on screen and
-  then scrolls to keep the rows it selected there.
+  then scrolls to keep the rows it selected there, with the rows on screen
+  that were selected before it, so that `Alt-A` again deselects them rather
+  than select rows the scroll brought on screen.
 - Once the process list is read, kil catches `SIGHUP`, `SIGINT`, `SIGTERM`,
   and `SIGQUIT` and ends with 128 plus the signal's number after restoring the
   terminal and reporting what it signalled. Left to their default actions,

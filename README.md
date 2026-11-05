@@ -31,6 +31,7 @@ kil node dev   # arguments are joined into one query: "node dev"
 kil -e node    # exact match: only lines that contain "node"
 kil -- -zsh    # use -- when the query starts with "-"
 kil --help     # show usage
+kil --version  # show the version
 ```
 
 ### Query syntax

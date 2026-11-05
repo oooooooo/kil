@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	ossignal "os/signal"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ All arguments are joined with spaces into the initial query.
 Options:
   -e, --exact  Match plain terms exactly, as fzf --exact ('term matches fuzzily)
   -h, --help   Show this help and exit
+  --version    Show the version and exit
   --           Treat the remaining arguments as the query (e.g. kil -- -zsh)
 
 Environment:
@@ -63,9 +65,10 @@ func ignoreBrokenPipe() {
 }
 
 type options struct {
-	help  bool
-	exact bool
-	query string
+	help    bool
+	version bool
+	exact   bool
+	query   string
 }
 
 func parseArgs(args []string) (options, error) {
@@ -74,6 +77,8 @@ func parseArgs(args []string) (options, error) {
 		switch {
 		case a == "-h" || a == "--help":
 			return options{help: true}, nil
+		case a == "--version":
+			return options{version: true}, nil
 		case a == "-e" || a == "--exact":
 			opts.exact = true
 		case a == "--":
@@ -106,6 +111,15 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if err != nil {
 		reportf(stderr, "kil: %v\n%s", err, usage)
 		return exitError
+	}
+	if opts.version {
+		// As the usage, the version is the whole output, so failing to
+		// write it is an error.
+		if _, err := fmt.Fprintf(stdout, "kil %s\n", version()); err != nil {
+			reportf(stderr, "kil: write error: %v\n", err)
+			return exitError
+		}
+		return exitOK
 	}
 	if opts.help {
 		// Unlike the reports of signals sent, the usage is the whole
@@ -156,6 +170,23 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		return pickFailed(sent, err, stdout, stderr, in)
 	}
 	return finish(model, sig, sent, stdout, stderr, in)
+}
+
+// releaseVersion is set at release builds with -ldflags "-X
+// main.releaseVersion=v1.2.3".
+var releaseVersion string
+
+// version returns kil's version: the release's, or the one Go records in
+// the build, a module version for go install, or a pseudo-version with the
+// commit, marked "+dirty" for a tree with changes, for a local build.
+func version() string {
+	if releaseVersion != "" {
+		return releaseVersion
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "devel"
 }
 
 // pickFailed reports a picker failure after the reports of the rows already

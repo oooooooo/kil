@@ -342,3 +342,38 @@ func TestScreenWithoutAKnownTermHasNoColors(t *testing.T) {
 		}
 	}
 }
+
+// --version prints kil's version from the build, as go install records it,
+// so that a bug report can say which kil it is about.
+func TestVersion(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--version"}, func(string) string { return "" }, &stdout, &stderr)
+	v, ok := strings.CutPrefix(stdout.String(), "kil ")
+	v, nl := strings.CutSuffix(v, "\n")
+	if code != exitOK || !ok || !nl || v == "" || v == "(devel)" || strings.ContainsAny(v, " \n") || stderr.Len() != 0 {
+		t.Errorf("kil --version = %d, stdout %q, stderr %q; want %d and \"kil <version>\"", code, stdout.String(), stderr.String(), exitOK)
+	}
+	if !strings.Contains(usage, "--version") {
+		t.Error("the usage does not mention --version")
+	}
+}
+
+// A release build gives its version with -ldflags, which --version prints
+// as it is.
+func TestVersionOfARelease(t *testing.T) {
+	saved := releaseVersion
+	t.Cleanup(func() { releaseVersion = saved })
+	releaseVersion = "v1.2.3"
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--version"}, func(string) string { return "" }, &stdout, &stderr); code != exitOK || stdout.String() != "kil v1.2.3\n" {
+		t.Errorf("kil --version = %d, %q; want %d and \"kil v1.2.3\\n\"", code, stdout.String(), exitOK)
+	}
+}
+
+// After --, --version is a query, as --help is.
+func TestVersionAfterDashDashIsAQuery(t *testing.T) {
+	opts, err := parseArgs([]string{"--", "--version"})
+	if err != nil || opts.version || opts.query != "--version" {
+		t.Errorf("parseArgs(-- --version) = %+v, %v; want the query --version", opts, err)
+	}
+}

@@ -129,3 +129,18 @@ Using fzf is fine, and so is writing it from scratch in Go.
 - The check before signalling compares the ps line without the PPID. Killing
   a parent reparents its children, so with the PPID a child selected after
   its parent was skipped as changed and survived.
+- A `ps` that fails while kil checks a process before signalling it is
+  reported as `failed:` with its reason, not as `skipped:`. ps exits with
+  status 1 both for a PID that is gone and for an error, and only an error
+  writes to stderr; reported as skipped, a check kil could not make looked
+  like a process that had exited. Every `failed:` report gives the reason
+  before the line, as `skipped:` does, so the line is always last.
+- On Linux, kil signals through a pidfd and falls back to checking and then
+  `kill(2)` only when pidfd also fails for kil itself: opening a pidfd for its
+  own PID, or signalling itself with signal 0 through it, as Go's os package
+  probes. The system then lacks pidfd or denies it, as seccomp does in some
+  containers, and kil would otherwise signal nothing, or report a lack of
+  permission the user does not have. A pidfd failure for one target alone, or
+  for lack of file descriptors or memory, is reported instead, as Rust's and
+  Python's standard libraries also tell those apart, so that kil keeps the
+  pidfd's protection against a reused PID wherever it has it.

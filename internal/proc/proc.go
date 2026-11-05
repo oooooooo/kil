@@ -3,6 +3,8 @@
 package proc
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -132,14 +134,31 @@ func List(self int) ([]Process, error) {
 }
 
 // Current returns the ps line of pid now, or false if pid does not exist.
-func Current(pid int) (string, bool) {
-	out, err := ps("-p", strconv.Itoa(pid)).Output()
+// A ps that fails is an error rather than a missing process, so that kil does
+// not report a process it could not check as one that exited.
+func Current(pid int) (string, bool, error) {
+	cmd := ps("-p", strconv.Itoa(pid))
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	// ps, on Linux and macOS, exits with status 1 and prints nothing when no
+	// process has the PID. It also exits with 1 on errors, but then says why.
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 && len(out) == 0 && stderr.Len() == 0 {
+		return "", false, nil
+	}
 	if err != nil {
-		return "", false
+		if msg := strings.TrimSpace(stderr.String()); msg != "" {
+			return "", false, fmt.Errorf("ps failed: %w: %s", err, msg)
+		}
+		return "", false, fmt.Errorf("ps failed: %w", err)
 	}
 	procs, err := Parse(string(out))
-	if err != nil || len(procs) != 1 {
-		return "", false
+	if err != nil {
+		return "", false, err
 	}
-	return procs[0].Identity, true
+	if len(procs) != 1 {
+		return "", false, fmt.Errorf("ps listed %d processes for PID %d", len(procs), pid)
+	}
+	return procs[0].Identity, true, nil
 }

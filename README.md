@@ -77,7 +77,9 @@ The query is edited with readline's keys: `Ctrl-A` / `Ctrl-E` (or `Home` /
 previous word, and a character.
 
 Each result is reported as `sent SIGKILL:` (or whichever signal you chose),
-`skipped:`, or `failed:` (e.g. no permission).
+`skipped:`, or `failed:` with the reason, such as
+`failed: operation not permitted:` or a `ps` that failed while checking the
+process.
 
 ### Exit status
 
@@ -117,8 +119,9 @@ Each result is reported as `sent SIGKILL:` (or whichever signal you chose),
   children, so a parent and child selected together are both signalled. It cannot
   tell apart a restarted process with the identical command line. On Linux,
   the signal goes through a pidfd opened before the check, so it cannot reach
-  a different process that reused the PID; on macOS the PID can still change
-  between the check and the signal.
+  a different process that reused the PID; on macOS, on kernels older than
+  5.3, and where seccomp denies pidfd (as in some containers), the PID can
+  still change between the check and the signal.
 
 ## License
 

@@ -145,7 +145,7 @@ func TestStopDuringTheLastCheck(t *testing.T) {
 	in := &interrupts{}
 	saved := currentLine
 	t.Cleanup(func() { currentLine = saved })
-	currentLine = func(pid int) (string, bool) {
+	currentLine = func(pid int) (string, bool, error) {
 		in.catch(syscall.SIGTERM)
 		return saved(pid)
 	}
@@ -164,9 +164,9 @@ func TestStopAfterTheLastProcess(t *testing.T) {
 	saved := currentLine
 	t.Cleanup(func() { currentLine = saved })
 	// The process looks changed, so it is skipped rather than cancelled.
-	currentLine = func(int) (string, bool) {
+	currentLine = func(int) (string, bool, error) {
 		in.catch(syscall.SIGTERM)
-		return "another line", true
+		return "another line", true, nil
 	}
 	var stdout, stderr bytes.Buffer
 	if code := signalAll([]picker.Item{target}, 0, &stdout, &stderr, in); code != 143 {
@@ -257,5 +257,22 @@ func TestSuspendIsIgnored(t *testing.T) {
 		if got := canSuspend(tt.in, func() bool { return tt.jobControl })(tt.m); got != tt.want {
 			t.Errorf("%s: canSuspend = %v, want %v", name, got, tt.want)
 		}
+	}
+}
+
+// A process kil could not check, as when ps fails, is reported as failed
+// with the reason, not as changed or exited, and is not signalled.
+func TestFailedCheckIsReportedWithItsReason(t *testing.T) {
+	target := ownSleeper(t)
+	saved := currentLine
+	t.Cleanup(func() { currentLine = saved })
+	currentLine = func(int) (string, bool, error) {
+		return "", false, errors.New("ps failed: exit status 2")
+	}
+	var stdout, stderr bytes.Buffer
+	code := signalAll([]picker.Item{target}, 0, &stdout, &stderr, nil)
+	want := "failed: checking the process: ps failed: exit status 2: " + target.Text + "\n"
+	if code != exitProblems || stdout.Len() != 0 || stderr.String() != want {
+		t.Errorf("code %d, stdout %q, stderr %q; want %d and %q", code, stdout.String(), stderr.String(), exitProblems, want)
 	}
 }

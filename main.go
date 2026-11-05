@@ -366,7 +366,8 @@ func signalAll(targets []picker.Item, sig syscall.Signal, stdout, stderr io.Writ
 			code = exitProblems
 			continue
 		}
-		switch signal.Send(pid, sig, t.ID, currentLine, stopped) {
+		outcome, err := signal.Send(pid, sig, t.ID, currentLine, stopped)
+		switch outcome {
 		case signal.Sent:
 			reportf(stdout, "sent %s: %s\n", signal.Label(sig), t.Text)
 		case signal.Skipped:
@@ -375,7 +376,9 @@ func signalAll(targets []picker.Item, sig syscall.Signal, stdout, stderr io.Writ
 		case signal.Cancelled:
 			return skipRest(targets[i:], stderr, in)
 		default:
-			reportf(stderr, "failed: %s\n", t.Text)
+			// The reason comes first, as in "skipped: process changed or
+			// exited: ...", so that the line is always last.
+			reportf(stderr, "failed: %v: %s\n", err, t.Text)
 			code = exitProblems
 		}
 	}

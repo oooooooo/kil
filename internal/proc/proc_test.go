@@ -107,9 +107,9 @@ func TestCurrentMatchesListedLine(t *testing.T) {
 	if i < 0 {
 		t.Fatalf("sleep %d not listed", cmd.Process.Pid)
 	}
-	line, ok := Current(cmd.Process.Pid)
-	if !ok || line != all[i].Identity {
-		t.Errorf("Current() = %q, %v; want %q, true", line, ok, all[i].Identity)
+	line, ok, err := Current(cmd.Process.Pid)
+	if err != nil || !ok || line != all[i].Identity {
+		t.Errorf("Current() = %q, %v, %v; want %q, true, nil", line, ok, err, all[i].Identity)
 	}
 }
 
@@ -118,8 +118,8 @@ func TestCurrentReportsExitedProcess(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatal(err)
 	}
-	if line, ok := Current(cmd.Process.Pid); ok {
-		t.Errorf("Current(exited %s) = %q, true; want false", strconv.Itoa(cmd.Process.Pid), line)
+	if line, ok, err := Current(cmd.Process.Pid); ok || err != nil {
+		t.Errorf("Current(exited %s) = %q, %v, %v; want false and no error", strconv.Itoa(cmd.Process.Pid), line, ok, err)
 	}
 }
 
@@ -142,8 +142,8 @@ func TestLongCommandLinesAreNotCutToColumns(t *testing.T) {
 	if i < 0 || !strings.HasSuffix(all[i].Raw, "-tail 60") {
 		t.Fatalf("List() did not include the whole command line of %d", cmd.Process.Pid)
 	}
-	if line, ok := Current(cmd.Process.Pid); !ok || line != all[i].Identity {
-		t.Errorf("Current() = %q, %v; want the whole line", line, ok)
+	if line, ok, err := Current(cmd.Process.Pid); err != nil || !ok || line != all[i].Identity {
+		t.Errorf("Current() = %q, %v, %v; want the whole line", line, ok, err)
 	}
 }
 
@@ -171,7 +171,49 @@ func TestPsSyntaxVariablesAreIgnored(t *testing.T) {
 	if _, err := List(0); err != nil {
 		t.Errorf("List(): %v", err)
 	}
-	if _, ok := Current(os.Getpid()); !ok {
-		t.Error("Current(self) found nothing")
+	if _, ok, err := Current(os.Getpid()); !ok || err != nil {
+		t.Errorf("Current(self) found nothing: %v", err)
+	}
+}
+
+// fakePS puts a ps that runs script first on PATH.
+func fakePS(t *testing.T, script string) {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte("#!/bin/sh\n"+script+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+}
+
+// A ps that fails is not a process that exited: kil must not report a
+// process it could not check as changed or exited.
+func TestCurrentReportsAFailedPs(t *testing.T) {
+	for name, script := range map[string]string{
+		"an error message":       "echo 'ps: cannot read /proc' >&2; exit 1",
+		"another status":         "exit 2",
+		"output it cannot parse": "echo garbage",
+	} {
+		t.Run(name, func(t *testing.T) {
+			fakePS(t, script)
+			if line, ok, err := Current(os.Getpid()); err == nil {
+				t.Errorf("Current() = %q, %v, nil; want an error", line, ok)
+			}
+		})
+	}
+	t.Run("no ps", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		if line, ok, err := Current(os.Getpid()); err == nil {
+			t.Errorf("Current() = %q, %v, nil; want an error", line, ok)
+		}
+	})
+}
+
+// The error says what ps wrote, so that the user can tell why kil could not
+// check a process.
+func TestCurrentErrorIncludesWhatPsWrote(t *testing.T) {
+	fakePS(t, "echo 'ps: cannot read /proc' >&2; exit 1")
+	if _, _, err := Current(os.Getpid()); err == nil || !strings.Contains(err.Error(), "cannot read /proc") {
+		t.Errorf("Current() error = %v, want it to include what ps wrote", err)
 	}
 }

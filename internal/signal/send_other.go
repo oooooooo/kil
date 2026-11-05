@@ -4,6 +4,6 @@ package signal
 
 import "syscall"
 
-func send(pid int, sig syscall.Signal, unchanged func() bool) Outcome {
+func send(pid int, sig syscall.Signal, unchanged func() (bool, error)) (Outcome, error) {
 	return sendWithKill(pid, sig, unchanged)
 }

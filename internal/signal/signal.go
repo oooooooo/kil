@@ -83,35 +83,51 @@ func (o Outcome) String() string {
 // user selected, so that a process that exited and whose PID was reused by
 // an unrelated process is not signalled. stopped, if not nil, is asked
 // after that check, right before the signal is sent, as the check can take
-// a while.
-func Send(pid int, sig syscall.Signal, want string, current func(int) (string, bool), stopped func() bool) Outcome {
+// a while. When the outcome is Failed, the error says why: the check failed,
+// or the signal did, for example for lack of permission.
+func Send(pid int, sig syscall.Signal, want string, current func(int) (string, bool, error), stopped func() bool) (Outcome, error) {
 	// kill(2) treats 0 and negative PIDs as process groups, and -1 as every
 	// process the user may signal.
 	if pid <= 0 {
-		return Skipped
+		return Skipped, nil
 	}
 	cancelled := false
-	outcome := send(pid, sig, func() bool {
-		line, ok := current(pid)
+	outcome, err := send(pid, sig, func() (bool, error) {
+		line, ok, err := current(pid)
+		if err != nil {
+			return false, fmt.Errorf("checking the process: %w", err)
+		}
 		if !ok || line != want {
-			return false
+			return false, nil
 		}
 		cancelled = stopped != nil && stopped()
-		return !cancelled
+		return !cancelled, nil
 	})
 	if cancelled {
-		return Cancelled
+		return Cancelled, nil
 	}
-	return outcome
+	return outcome, err
 }
 
-func outcomeOf(err error) Outcome {
+// outcomeOf returns the outcome of a system call that signals a process or
+// opens it, and the error when that is a failure.
+func outcomeOf(err error) (Outcome, error) {
 	switch err {
 	case nil:
-		return Sent
+		return Sent, nil
 	case unix.ESRCH:
-		return Skipped
+		return Skipped, nil
 	default:
-		return Failed
+		return Failed, err
 	}
+}
+
+// unchecked returns the outcome when the check before signalling did not
+// pass: Failed if the check itself failed, or Skipped if the process changed
+// or exited.
+func unchecked(err error) (Outcome, error) {
+	if err != nil {
+		return Failed, err
+	}
+	return Skipped, nil
 }

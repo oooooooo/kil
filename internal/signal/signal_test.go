@@ -1,10 +1,13 @@
 package signal
 
 import (
+	"errors"
 	"os/exec"
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestParse(t *testing.T) {
@@ -56,6 +59,21 @@ func startSleep(t *testing.T) *exec.Cmd {
 	return cmd
 }
 
+// stillRunning reports whether cmd keeps running for a moment, long enough
+// for a signal sent to it to take effect. Signal 0 cannot tell, as it still
+// reaches a child that has exited and is not yet reaped.
+func stillRunning(cmd *exec.Cmd) bool {
+	for deadline := time.Now().Add(300 * time.Millisecond); time.Now().Before(deadline); {
+		var status syscall.WaitStatus
+		pid, err := syscall.Wait4(cmd.Process.Pid, &status, syscall.WNOHANG, nil)
+		if err != nil || pid != 0 {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return true
+}
+
 func exited(cmd *exec.Cmd) bool {
 	done := make(chan struct{})
 	go func() { _, _ = cmd.Process.Wait(); close(done) }()
@@ -67,13 +85,13 @@ func exited(cmd *exec.Cmd) bool {
 	}
 }
 
-func fixed(line string, ok bool) func(int) (string, bool) {
-	return func(int) (string, bool) { return line, ok }
+func fixed(line string, ok bool) func(int) (string, bool, error) {
+	return func(int) (string, bool, error) { return line, ok, nil }
 }
 
 func TestSendSignalsWhenLineIsUnchanged(t *testing.T) {
 	cmd := startSleep(t)
-	got := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("the line", true), nil)
+	got, _ := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("the line", true), nil)
 	if got != Sent {
 		t.Fatalf("Send() = %v, want Sent", got)
 	}
@@ -84,12 +102,12 @@ func TestSendSignalsWhenLineIsUnchanged(t *testing.T) {
 
 func TestSendSkipsWhenLineChanged(t *testing.T) {
 	cmd := startSleep(t)
-	got := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("another line", true), nil)
+	got, _ := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("another line", true), nil)
 	if got != Skipped {
 		t.Errorf("Send() = %v, want Skipped", got)
 	}
-	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
-		t.Errorf("process was signalled: %v", err)
+	if !stillRunning(cmd) {
+		t.Error("process was signalled")
 	}
 }
 
@@ -98,7 +116,7 @@ func TestSendSkipsWhenProcessIsGone(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatal(err)
 	}
-	got := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("", false), nil)
+	got, _ := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("", false), nil)
 	if got != Skipped {
 		t.Errorf("Send() = %v, want Skipped", got)
 	}
@@ -107,7 +125,7 @@ func TestSendSkipsWhenProcessIsGone(t *testing.T) {
 func TestSendRefusesNonPositivePIDs(t *testing.T) {
 	for _, pid := range []int{0, -1} {
 		// Signal 0 so that a regression cannot hit a real process group.
-		if got := Send(pid, syscall.Signal(0), "x", fixed("x", true), nil); got != Skipped {
+		if got, _ := Send(pid, syscall.Signal(0), "x", fixed("x", true), nil); got != Skipped {
 			t.Errorf("Send(%d) = %v, want Skipped", pid, got)
 		}
 	}
@@ -119,15 +137,40 @@ func TestSendRefusesNonPositivePIDs(t *testing.T) {
 func TestSendCancelsWhenStoppedDuringTheCheck(t *testing.T) {
 	cmd := startSleep(t)
 	stopped := false
-	current := func(int) (string, bool) {
+	current := func(int) (string, bool, error) {
 		stopped = true
-		return "the line", true
+		return "the line", true, nil
 	}
-	got := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", current, func() bool { return stopped })
+	got, _ := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", current, func() bool { return stopped })
 	if got != Cancelled {
 		t.Errorf("Send() = %v, want Cancelled", got)
 	}
-	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
-		t.Errorf("process was signalled: %v", err)
+	if !stillRunning(cmd) {
+		t.Error("process was signalled")
+	}
+}
+
+// A check that fails, as when ps does, is not a process that exited: Send
+// fails with the reason and signals nothing.
+func TestSendFailsWhenTheCheckFails(t *testing.T) {
+	cmd := startSleep(t)
+	checkErr := errors.New("ps failed: exit status 2")
+	current := func(int) (string, bool, error) { return "", false, checkErr }
+	got, err := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", current, nil)
+	if got != Failed || !errors.Is(err, checkErr) {
+		t.Errorf("Send() = %v, %v; want Failed with the check's error", got, err)
+	}
+	if !stillRunning(cmd) {
+		t.Error("process was signalled")
+	}
+}
+
+// When the signal itself fails, Send says why, such as a lack of permission.
+func TestSendReportsWhySignallingFailed(t *testing.T) {
+	cmd := startSleep(t)
+	failDelivery(t, unix.EPERM)
+	got, err := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("the line", true), nil)
+	if got != Failed || !errors.Is(err, unix.EPERM) {
+		t.Errorf("Send() = %v, %v; want Failed with EPERM", got, err)
 	}
 }

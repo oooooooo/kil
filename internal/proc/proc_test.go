@@ -3,6 +3,7 @@ package proc
 import (
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -18,29 +19,88 @@ func pids(ps []Process) []int {
 	return out
 }
 
+// kil reads the command name in a ps run of its own, as the last column,
+// so that a name with spaces, such as "tmux: server", ends where it should,
+// and lays the columns out itself.
 func TestParse(t *testing.T) {
-	out := "    1     0 root     init            /sbin/init\n" +
-		"  202     1 alice    tmux: server    tmux new -s work\n" +
+	listing := "    1     0 root     /sbin/init\n" +
+		"  202     1 alice    tmux new -s work\n" +
 		"\n"
-	got, err := Parse(out)
+	names := "    1     0 init\n  202     1 tmux: server\n"
+	got, err := Parse(listing, names)
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []Process{
-		{PID: 1, PPID: 0, Identity: "1 root init /sbin/init",
-			Raw: "    1     0 root     init            /sbin/init"},
-		{PID: 202, PPID: 1, Identity: "202 alice tmux: server tmux new -s work",
-			Raw: "  202     1 alice    tmux: server    tmux new -s work"},
+		{PID: 1, PPID: 0, User: "root", Comm: "init", Args: "/sbin/init",
+			Identity: "1\troot\tinit\t/sbin/init",
+			Raw:      "  1 0 root  init         /sbin/init", Frozen: 25},
+		{PID: 202, PPID: 1, User: "alice", Comm: "tmux: server", Args: "tmux new -s work",
+			Identity: "202\talice\ttmux: server\ttmux new -s work",
+			Raw:      "202 1 alice tmux: server tmux new -s work", Frozen: 25},
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("Parse() = %+v, want %+v", got, want)
 	}
 }
 
+// A process missing from one of the two ps runs exited or started in
+// between, so it is left out rather than shown without a name.
+func TestParseLeavesOutProcessesMissingFromARun(t *testing.T) {
+	listing := "  10     1 root /a\n  30     1 root /c\n"
+	names := "  10     1 a\n  40     1 d\n"
+	got, err := Parse(listing, names)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(pids(got), []int{10}) {
+		t.Errorf("Parse() kept %v, want [10]", pids(got))
+	}
+}
+
+// A process whose parent was killed between the two runs was reparented,
+// and is still the same process: dropped, it would be skipped as changed
+// when kil signals a parent and then its child.
+func TestParseKeepsAProcessReparentedBetweenTheRuns(t *testing.T) {
+	got, err := Parse("  20     1 root /b\n", "  20     5 b\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].PPID != 1 || got[0].Comm != "b" {
+		t.Errorf("Parse() = %+v, want process 20 with the listing's PPID 1", got)
+	}
+}
+
+// A long command name, as a macOS path in argv[0], is shown cut to 16
+// columns, as ps on macOS cut it, so that one long name cannot widen the
+// frozen columns of every row until the command lines are off screen. The
+// identity keeps the whole name.
+func TestParseCutsLongCommandNamesOnScreen(t *testing.T) {
+	long := "/Applications/Visual Studio Code.app/Contents/MacOS/Electron"
+	got, err := Parse("  1 0 alice /x\n", "  1 0 "+long+"\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Parse() = %+v, want one process", got)
+	}
+	if want := "1 0 alice /Applications/Vi /x"; got[0].Raw != want || got[0].Frozen != len(want)-2 {
+		t.Errorf("Raw = %q, Frozen = %d; want %q and %d", got[0].Raw, got[0].Frozen, want, len(want)-2)
+	}
+	if got[0].Comm != long || !strings.Contains(got[0].Identity, long) {
+		t.Errorf("Comm = %q, Identity = %q; want the whole name in both", got[0].Comm, got[0].Identity)
+	}
+}
+
 func TestParseRejectsMalformedLines(t *testing.T) {
-	for _, line := range []string{"abc 1 root x x", "12", "-1 1 root x x", "0 1 root x x"} {
-		if _, err := Parse(line + "\n"); err == nil {
+	for _, line := range []string{"abc 1 root x", "12", "-1 1 root x", "0 1 root x", "12 1"} {
+		if _, err := Parse(line+"\n", "12 1 x\n"); err == nil {
 			t.Errorf("Parse(%q) succeeded, want an error", line)
+		}
+	}
+	for _, line := range []string{"abc 1 x", "12", "12 x y"} {
+		if _, err := Parse("12 1 root x\n", line+"\n"); err == nil {
+			t.Errorf("Parse(names %q) succeeded, want an error", line)
 		}
 	}
 }
@@ -223,19 +283,19 @@ func TestCurrentErrorIncludesWhatPsWrote(t *testing.T) {
 // terminal kil reports to. Control characters and invalid UTF-8 become
 // "?", as procps prints them on Linux.
 func TestParseReplacesControlCharacters(t *testing.T) {
-	out := "  101     1 alice    evil            /bin/x \x1b]0;pwn\x07 \x1b[31mred\x7f \u009b2J \xff\n"
-	got, err := Parse(out)
+	listing := "  101     1 alice    /bin/x \x1b]0;pwn\x07 \x1b[31mred\x7f \u009b2J \xff\n"
+	got, err := Parse(listing, "  101     1 ev\x1b[2Jil\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
 		t.Fatalf("Parse() = %v, want one process", got)
 	}
-	wantRaw := "  101     1 alice    evil            /bin/x ?]0;pwn? ?[31mred? ?2J ?"
+	wantRaw := "101 1 alice ev?[2Jil /bin/x ?]0;pwn? ?[31mred? ?2J ?"
 	if got[0].Raw != wantRaw {
 		t.Errorf("Raw = %q, want %q", got[0].Raw, wantRaw)
 	}
-	wantID := "101 alice evil /bin/x ?]0;pwn? ?[31mred? ?2J ?"
+	wantID := "101\talice\tev?[2Jil\t/bin/x ?]0;pwn? ?[31mred? ?2J ?"
 	if got[0].Identity != wantID {
 		t.Errorf("Identity = %q, want %q", got[0].Identity, wantID)
 	}
@@ -247,13 +307,93 @@ func TestParseReplacesControlCharacters(t *testing.T) {
 // another one. They become "?" as well; the zero-width joiner in emoji does
 // not.
 func TestParseReplacesBidiControlsAndSeparators(t *testing.T) {
-	out := "  101     1 alice    evil            /bin/x \u202Etxt.exe \u2066a\u2069 \u200F \u2028 \u2029 \U0001F468\u200D\U0001F469\n"
-	got, err := Parse(out)
+	listing := "  101     1 alice    /bin/x \u202Etxt.exe \u2066a\u2069 \u200F \u2028 \u2029 \U0001F468\u200D\U0001F469\n"
+	got, err := Parse(listing, "  101     1 evil\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "  101     1 alice    evil            /bin/x ?txt.exe ?a? ? ? ? \U0001F468\u200D\U0001F469"
+	want := "101 1 alice evil /bin/x ?txt.exe ?a? ? ? ? \U0001F468\u200D\U0001F469"
 	if len(got) != 1 || got[0].Raw != want {
 		t.Errorf("Parse() = %+v, want Raw %q", got, want)
 	}
+}
+
+// A command name with spaces, as an executable named "my sleep" has, is
+// kept whole, and the columns kept on screen end where the command line
+// begins.
+func TestListKeepsCommandNamesWithSpaces(t *testing.T) {
+	dir := t.TempDir()
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := filepath.Join(dir, "my sleep")
+	if err := os.Symlink(sleep, named); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(named, "60")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+
+	all, err := List(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(all, func(p Process) bool { return p.PID == cmd.Process.Pid })
+	if i < 0 {
+		t.Fatalf("process %d not listed", cmd.Process.Pid)
+	}
+	p := all[i]
+	if !strings.HasSuffix(p.Comm, "my sleep") {
+		t.Errorf("Comm = %q, want it to end with \"my sleep\"", p.Comm)
+	}
+	if got := string([]rune(p.Raw)[p.Frozen:]); got != p.Args {
+		t.Errorf("Raw after the frozen columns = %q, want the command line %q", got, p.Args)
+	}
+}
+
+// User names longer than 8 characters are listed whole: procps cuts them
+// to 8, as "systemd+", unless asked for a wider column.
+func TestListKeepsLongUserNames(t *testing.T) {
+	all, err := List(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := false
+	for _, p := range all {
+		uid, ok := procUID(p.PID)
+		if !ok {
+			continue
+		}
+		u, err := user.LookupId(uid)
+		if err != nil || len(u.Username) <= 8 {
+			continue
+		}
+		checked = true
+		if p.User != u.Username {
+			t.Errorf("PID %d: User = %q, want %q", p.PID, p.User, u.Username)
+		}
+	}
+	if !checked {
+		t.Skip("no process here runs as a user with a name longer than 8 characters")
+	}
+}
+
+// procUID returns the effective UID of pid from /proc, where there is one,
+// as ps shows the effective user.
+func procUID(pid int) (string, bool) {
+	status, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status"))
+	if err != nil {
+		return "", false
+	}
+	for line := range strings.Lines(string(status)) {
+		if rest, ok := strings.CutPrefix(line, "Uid:"); ok {
+			if fields := strings.Fields(rest); len(fields) > 1 {
+				return fields[1], true
+			}
+		}
+	}
+	return "", false
 }

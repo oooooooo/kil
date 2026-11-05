@@ -21,6 +21,9 @@ type Item struct {
 	// a selection does not carry over to a new process that reused the PID.
 	ID   string
 	Text string
+	// Frozen is the number of leading runes of Text that stay on screen
+	// when a long line is scrolled: the PID, PPID, USER, and COMM columns.
+	Frozen int
 }
 
 // A Row is an Item as currently shown.

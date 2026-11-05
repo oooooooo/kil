@@ -65,7 +65,19 @@ Using fzf is fine, and so is writing it from scratch in Go.
   scroll.
 - The PID, PPID, USER, and COMM columns never scroll away, as with fzf
   `--freeze-left=4`. fzf's horizontal scrolling alone hid them when a match
-  was far right, so the user could not tell which process a row was.
+  was far right, so the user could not tell which process a row was. kil reads
+  the command name in a ps run of its own, as the last column, joined with the
+  listing by PID, and lays the columns out itself, so that each line says
+  where its frozen columns end. A command name with spaces, as `tmux: server`
+  or a macOS path, made splitting at whitespace end the columns inside it, and
+  one ps run left no reliable boundary. The runs are joined by PID alone:
+  killing a parent reparents its children between them, and a PID reused
+  between them gives a line that matches neither process, which the check
+  before signalling skips. The command name is shown cut to 16 columns, as ps
+  on macOS, which gives argv[0], cut it when it was not the last column;
+  uncut, one long path pushed every command line off screen. On Linux the user
+  column is widened, as procps cut names to 8 characters, as `systemd+`; ps on
+  macOS and FreeBSD does not cut them and does not accept a width.
 - `Ctrl-R` keeps selections whose processes exited or changed, pinned until
   deselected, and `Enter` reports them as skipped. Dropping them instead left
   nothing selected, so `Enter` signalled the cursor line, a process the user

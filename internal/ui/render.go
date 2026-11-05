@@ -396,7 +396,7 @@ func (m Model) renderRow(r picker.Row, focused bool) string {
 	// The PID, PPID, USER, and COMM columns never scroll away, as with fzf
 	// --freeze-left=4: without them the user cannot tell which process a
 	// row is. Only the command line after them scrolls to show the match.
-	frozen := fieldsEnd(text, frozenFields)
+	frozen := min(r.Item.Frozen, len(text))
 	frozenWidth := runesWidth(text[:frozen])
 	if frozenWidth+widths.StringWidth(ellipsis) >= width {
 		// No room to scroll: cut the whole line on the right.
@@ -430,31 +430,6 @@ func (m Model) renderRow(r picker.Row, focused bool) string {
 	}
 	b.WriteString(reset)
 	return b.String()
-}
-
-// frozenFields is the number of leading ps columns kept on screen: PID,
-// PPID, USER, and COMM.
-const frozenFields = 4
-
-// fieldsEnd returns the index in text just after the first n
-// whitespace-separated fields and the whitespace that follows them, as
-// fzf's default AWK-style field splitting counts them. A COMM with spaces,
-// such as "tmux: server", counts as more than one field.
-func fieldsEnd(text []rune, n int) int {
-	isSpace := func(r rune) bool { return r == ' ' || r == '\t' }
-	i := 0
-	for range n {
-		for i < len(text) && isSpace(text[i]) {
-			i++
-		}
-		for i < len(text) && !isSpace(text[i]) {
-			i++
-		}
-	}
-	for i < len(text) && isSpace(text[i]) {
-		i++
-	}
-	return i
 }
 
 // hscrollOff is fzf's default --hscroll-off: the columns kept visible after

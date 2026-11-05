@@ -134,7 +134,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		}
 		items := make([]picker.Item, len(procs))
 		for i, p := range procs {
-			items[i] = picker.Item{ID: p.Identity, Text: p.Raw}
+			items[i] = picker.Item{ID: p.Identity, Text: p.Raw, Frozen: p.Frozen}
 		}
 		return items, nil
 	}

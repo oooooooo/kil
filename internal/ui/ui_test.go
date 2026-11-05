@@ -14,12 +14,34 @@ import (
 	"github.com/oooooooo/kil/internal/picker"
 )
 
+// items returns an item for each line, with the first four
+// whitespace-separated fields as its frozen columns, as kil's ps lines have
+// them when no command name has a space.
 func items(lines ...string) []picker.Item {
 	out := make([]picker.Item, len(lines))
 	for i, l := range lines {
-		out[i] = picker.Item{ID: l, Text: l}
+		out[i] = picker.Item{ID: l, Text: l, Frozen: fieldsEnd([]rune(l), 4)}
 	}
 	return out
+}
+
+// fieldsEnd returns the index in text just after the first n
+// whitespace-separated fields and the whitespace that follows them.
+func fieldsEnd(text []rune, n int) int {
+	isSpace := func(r rune) bool { return r == ' ' || r == '\t' }
+	i := 0
+	for range n {
+		for i < len(text) && isSpace(text[i]) {
+			i++
+		}
+		for i < len(text) && !isSpace(text[i]) {
+			i++
+		}
+	}
+	for i < len(text) && isSpace(text[i]) {
+		i++
+	}
+	return i
 }
 
 // plain strips colors, so tests about content need not know the palette.
@@ -1338,5 +1360,18 @@ func TestQueryChangeWithManySelectionsMakesEnterPartial(t *testing.T) {
 	}
 	if _, offscreen := m.selectedOnScreen(); offscreen {
 		t.Errorf("the selections left are not back on screen:\n%s", plain(m.render()))
+	}
+}
+
+// The columns kept on screen end where the item says, so that a command
+// name with spaces, such as "my sleep", stays whole before the ellipsis.
+func TestFrozenColumnsEndWhereTheItemSays(t *testing.T) {
+	frozen := "  101     1 alice    my sleep        "
+	long := frozen + "/usr/bin/sleep " + strings.Repeat("x", 100) + " needle"
+	it := picker.Item{ID: long, Text: long, Frozen: len([]rune(frozen))}
+	m := drawn(New([]picker.Item{it}, "needle", "SIGKILL", noReload), 80, 10)
+	row := viewLines(m)[len(viewLines(m))-4]
+	if !strings.HasPrefix(row, "▌ "+frozen+"··") {
+		t.Errorf("row = %q, want it to start with the whole frozen columns, then the ellipsis", row)
 	}
 }

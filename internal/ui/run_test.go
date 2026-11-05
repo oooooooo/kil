@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -276,5 +277,44 @@ func TestNoColorsDrawsNoColor(t *testing.T) {
 		if fg != tcell.ColorDefault || bg != tcell.ColorDefault || (attr&tcell.AttrReverse != 0) != caret {
 			t.Fatalf("cell (%d, %d) %q has fg %v, bg %v, attributes %v; want no color, reverse only on the caret", x, y, c.Runes, fg, bg, attr)
 		}
+	}
+}
+
+// A control character in a row is drawn as "?", never as part of an escape
+// sequence, whatever gave the row: kil's drawing reads its own colors from
+// escape sequences in the rendered text.
+func TestControlCharactersInARowAreNotInterpreted(t *testing.T) {
+	s := simScreen(t)
+	m := New(items("101 a \x1b[7mx\x1b[0m"), "", "SIGKILL", noReload)
+	m, _ = press(m, WindowSizeMsg{Width: 80, Height: 24})
+	draw(s, m)
+	var row strings.Builder
+	for x := range 20 {
+		str, _, _ := s.Get(x, 20)
+		row.WriteString(str)
+	}
+	if got := row.String(); !strings.Contains(got, "101 a ?[7mx?[0m") {
+		t.Errorf("row drawn as %q, want the escapes shown as \"?\"", got)
+	}
+	_, st, _ := s.Get(13, 20)
+	if _, _, attr := st.Decompose(); attr&tcell.AttrReverse != 0 {
+		t.Error("the row's escape sequence turned on reverse video")
+	}
+}
+
+// A bidirectional control in a row, which could reorder it on screen, is
+// drawn as "?".
+func TestBidiControlsInARowAreDrawnAsQuestionMarks(t *testing.T) {
+	s := simScreen(t)
+	m := New(items("101 a \u202Etxt.exe"), "", "SIGKILL", noReload)
+	m, _ = press(m, WindowSizeMsg{Width: 80, Height: 24})
+	draw(s, m)
+	var row strings.Builder
+	for x := range 20 {
+		str, _, _ := s.Get(x, 20)
+		row.WriteString(str)
+	}
+	if got := row.String(); !strings.Contains(got, "101 a ?txt.exe") {
+		t.Errorf("row drawn as %q, want the override shown as \"?\"", got)
 	}
 }

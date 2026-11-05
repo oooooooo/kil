@@ -217,3 +217,43 @@ func TestCurrentErrorIncludesWhatPsWrote(t *testing.T) {
 		t.Errorf("Current() error = %v, want it to include what ps wrote", err)
 	}
 }
+
+// ps on macOS prints a command line as it is, so a process could put
+// terminal control sequences in it and repaint kil's screen or the
+// terminal kil reports to. Control characters and invalid UTF-8 become
+// "?", as procps prints them on Linux.
+func TestParseReplacesControlCharacters(t *testing.T) {
+	out := "  101     1 alice    evil            /bin/x \x1b]0;pwn\x07 \x1b[31mred\x7f \u009b2J \xff\n"
+	got, err := Parse(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("Parse() = %v, want one process", got)
+	}
+	wantRaw := "  101     1 alice    evil            /bin/x ?]0;pwn? ?[31mred? ?2J ?"
+	if got[0].Raw != wantRaw {
+		t.Errorf("Raw = %q, want %q", got[0].Raw, wantRaw)
+	}
+	wantID := "101 alice evil /bin/x ?]0;pwn? ?[31mred? ?2J ?"
+	if got[0].Identity != wantID {
+		t.Errorf("Identity = %q, want %q", got[0].Identity, wantID)
+	}
+}
+
+// Bidirectional controls, such as U+202E RIGHT-TO-LEFT OVERRIDE, and the
+// line and paragraph separators are not control characters to Unicode, but
+// can reorder or break a command line on screen, so that it reads as
+// another one. They become "?" as well; the zero-width joiner in emoji does
+// not.
+func TestParseReplacesBidiControlsAndSeparators(t *testing.T) {
+	out := "  101     1 alice    evil            /bin/x \u202Etxt.exe \u2066a\u2069 \u200F \u2028 \u2029 \U0001F468\u200D\U0001F469\n"
+	got, err := Parse(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "  101     1 alice    evil            /bin/x ?txt.exe ?a? ? ? ? \U0001F468\u200D\U0001F469"
+	if len(got) != 1 || got[0].Raw != want {
+		t.Errorf("Parse() = %+v, want Raw %q", got, want)
+	}
+}

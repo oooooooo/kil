@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // psColumns is the column list for ps -o. comm can contain spaces (e.g.
@@ -42,6 +44,7 @@ type Process struct {
 func Parse(out string) ([]Process, error) {
 	var procs []Process
 	for raw := range strings.Lines(out) {
+		raw = printable(strings.TrimRight(raw, "\n"))
 		fields := strings.Fields(raw)
 		if len(fields) == 0 {
 			continue
@@ -63,10 +66,34 @@ func Parse(out string) ([]Process, error) {
 			PID:      pid,
 			PPID:     ppid,
 			Identity: strings.Join(append([]string{fields[0]}, fields[2:]...), " "),
-			Raw:      strings.TrimRight(raw, "\n"),
+			Raw:      raw,
 		})
 	}
 	return procs, nil
+}
+
+// printable replaces control characters and invalid UTF-8 in a ps line with
+// "?", as procps prints them on Linux. ps on macOS and FreeBSD can print a
+// command or command line as it is, so a process could otherwise put
+// terminal control sequences in it and repaint kil's screen or the terminal
+// kil reports to. Bidirectional controls and the line and paragraph
+// separators, which procps keeps, become "?" too, as they can reorder or
+// break the line on screen so that it reads as another command.
+func printable(line string) string {
+	var b strings.Builder
+	for _, r := range strings.ToValidUTF8(line, "\uFFFD") {
+		if r == utf8.RuneError || unsafeOnScreen(r) {
+			r = '?'
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+// unsafeOnScreen reports whether r, written to a terminal, could do more
+// than show a character. internal/ui draws rows with the same rule.
+func unsafeOnScreen(r rune) bool {
+	return unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) || r == '\u2028' || r == '\u2029'
 }
 
 // HideDescendants returns procs without self and its descendants, so kil

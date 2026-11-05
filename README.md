@@ -109,6 +109,8 @@ process.
 - The PID, PPID, USER, and COMM columns always stay on screen. When a match is
   beyond the right edge, only the command line after them scrolls, with `··`
   marking the cut.
+- Control characters in process names and command lines are shown as `?`,
+  so that a process cannot send escape sequences to your terminal.
 - The process list is a snapshot taken when `kil` starts; press `Ctrl-R` to
   refresh it if processes have appeared, exited, or changed. A selected
   process that exited or changed stays selected and is reported as

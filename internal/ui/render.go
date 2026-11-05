@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/mattn/go-runewidth"
 	"github.com/rivo/uniseg"
@@ -357,7 +358,16 @@ func (m Model) renderRow(r picker.Row, focused bool) string {
 		base = style{fg: colorCursorFg, bg: colorCursorBg, bold: true}
 	}
 
+	// A control character, bidirectional control, or line separator is
+	// drawn as "?", one for one so that match positions still line up, so
+	// that a row can never carry an escape sequence, which kil's drawing
+	// would read as its own color, nor reorder or break on screen.
 	text := []rune(r.Item.Text)
+	for i, c := range text {
+		if unsafeOnScreen(c) {
+			text[i] = '?'
+		}
+	}
 	styles := make([]style, len(text))
 	for i := range styles {
 		styles[i] = base
@@ -543,4 +553,10 @@ func stripSGR(s string) string {
 		b.WriteByte(s[i])
 	}
 	return b.String()
+}
+
+// unsafeOnScreen reports whether r, written to a terminal, could do more
+// than show a character. internal/proc cleans ps lines with the same rule.
+func unsafeOnScreen(r rune) bool {
+	return unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) || r == '\u2028' || r == '\u2029'
 }

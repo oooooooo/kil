@@ -144,3 +144,12 @@ Using fzf is fine, and so is writing it from scratch in Go.
   for lack of file descriptors or memory, is reported instead, as Rust's and
   Python's standard libraries also tell those apart, so that kil keeps the
   pidfd's protection against a reused PID wherever it has it.
+- Control characters, invalid UTF-8, bidirectional controls, and the line and
+  paragraph separators in a ps line become `?`, both when the line is read and
+  when a row is drawn. procps does this on Linux except for the last two
+  kinds, but ps on macOS and FreeBSD can print a command as it is, so a
+  process could repaint the terminal, as CVE-2008-5076 in htop and
+  CVE-2026-90773 in procs did, or make its command line read as another one.
+  tcell writes control characters to the terminal as they are, and kil's
+  drawing reads its colors from escape sequences in the rendered text, so rows
+  are cleaned again where they are drawn.

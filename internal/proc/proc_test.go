@@ -509,3 +509,47 @@ func TestParseLinesUpAmbiguousWideNames(t *testing.T) {
 		t.Errorf("frozen columns are %d and %d columns wide, want them equal: %q, %q", a, b, got[0].Raw, got[1].Raw)
 	}
 }
+
+// CurrentAll checks several processes with one pair of ps runs, rather
+// than one pair per process, and leaves out those that are gone.
+func TestCurrentAllChecksSeveralTogether(t *testing.T) {
+	var pids []int
+	for range 3 {
+		cmd := exec.Command("sleep", "60")
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+		pids = append(pids, cmd.Process.Pid)
+	}
+	gone := exec.Command("true")
+	if err := gone.Run(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := CurrentAll(append(pids, gone.Process.Pid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("CurrentAll() found %d processes, want the 3 running", len(got))
+	}
+	for _, pid := range pids {
+		want, ok, err := Current(pid)
+		if err != nil || !ok || got[pid] != want {
+			t.Errorf("CurrentAll()[%d] = %q, want %q as Current gives it", pid, got[pid], want)
+		}
+	}
+
+	args := filepath.Join(t.TempDir(), "args")
+	fakePS(t, `echo "$@" >> '`+args+`'`)
+	if _, err := CurrentAll(pids); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := os.ReadFile(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(runs), "\n"); n != 2 {
+		t.Errorf("ps ran %d times for 3 processes, want 2:\n%s", n, runs)
+	}
+}

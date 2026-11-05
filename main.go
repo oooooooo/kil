@@ -391,32 +391,50 @@ func (monochrome) Colors() int { return 0 }
 func signalAll(targets []picker.Item, sig syscall.Signal, stdout, stderr io.Writer, in *interrupts) int {
 	stopped := func() bool { return in.stopping() != nil }
 	code := exitOK
+	// The processes are signalled together; at[i] is the position in
+	// targets of the i-th one, so that reports keep the order of targets.
+	var send []signal.Target
+	var at []int
 	for i, t := range targets {
-		if stopped() {
-			return skipRest(targets[i:], stderr, in)
-		}
 		var pid int
-		if _, err := fmt.Sscan(t.ID, &pid); err != nil {
-			reportf(stderr, "skipped: not a PID: %s\n", t.Text)
-			code = exitProblems
-			continue
+		if _, err := fmt.Sscan(t.ID, &pid); err == nil {
+			send = append(send, signal.Target{PID: pid, Want: t.ID})
+			at = append(at, i)
 		}
-		outcome, err := signal.Send(pid, sig, t.ID, currentLine, stopped)
+	}
+	next := 0
+	// reportUpTo reports the targets before end that have no PID.
+	reportUpTo := func(end int) {
+		for ; next < end; next++ {
+			reportf(stderr, "skipped: not a PID: %s\n", targets[next].Text)
+			code = exitProblems
+		}
+	}
+	signal.SendAll(send, sig, lookupLines, stopped, func(i int, outcome signal.Outcome, err error) {
+		if outcome == signal.Cancelled {
+			return
+		}
+		reportUpTo(at[i])
+		t := targets[at[i]]
+		next = at[i] + 1
 		switch outcome {
 		case signal.Sent:
 			reportf(stdout, "sent %s: %s\n", signal.Label(sig), t.Text)
 		case signal.Skipped:
 			reportf(stderr, "skipped: process changed or exited: %s\n", t.Text)
 			code = exitProblems
-		case signal.Cancelled:
-			return skipRest(targets[i:], stderr, in)
 		default:
 			// The reason comes first, as in "skipped: process changed or
 			// exited: ...", so that the line is always last.
 			reportf(stderr, "failed: %v: %s\n", err, t.Text)
 			code = exitProblems
 		}
+	})
+	// A stop leaves the targets from the first not reported unsignalled.
+	if stopped() && next < len(targets) {
+		return skipRest(targets[next:], stderr, in)
 	}
+	reportUpTo(len(targets))
 	// A signal that came as the last process was signalled still ends kil
 	// with its status.
 	if s := in.stopping(); s != nil {

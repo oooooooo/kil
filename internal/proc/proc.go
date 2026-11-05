@@ -298,21 +298,37 @@ func List(self int) ([]Process, error) {
 	return HideDescendants(procs, self), nil
 }
 
-// Current returns the identity of pid now, or false if pid does not exist
-// or changed between the ps runs. A ps that fails is an error rather than a
-// missing process, so that kil does not report a process it could not check
-// as one that exited.
+// Current returns the identity of pid now, as CurrentAll does for one PID,
+// or false if pid does not exist.
 func Current(pid int) (string, bool, error) {
-	procs, err := snapshot("-p", strconv.Itoa(pid))
+	found, err := CurrentAll([]int{pid})
 	if err != nil {
 		return "", false, err
 	}
-	switch len(procs) {
-	case 0:
-		return "", false, nil
-	case 1:
-		return procs[0].Identity, true, nil
-	default:
-		return "", false, fmt.Errorf("ps listed %d processes for PID %d", len(procs), pid)
+	line, ok := found[pid]
+	return line, ok, nil
+}
+
+// CurrentAll returns the identities of the processes with the given PIDs
+// now, checked together with one pair of ps runs. A process that is gone,
+// or that changed between the runs, is missing from the map. A ps that
+// fails is an error rather than missing processes, so that kil does not
+// report processes it could not check as ones that exited.
+func CurrentAll(pids []int) (map[int]string, error) {
+	found := map[int]string{}
+	if len(pids) == 0 {
+		return found, nil
 	}
+	list := make([]string, len(pids))
+	for i, pid := range pids {
+		list[i] = strconv.Itoa(pid)
+	}
+	procs, err := snapshot("-p", strings.Join(list, ","))
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range procs {
+		found[p.PID] = p.Identity
+	}
+	return found, nil
 }

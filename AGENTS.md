@@ -194,3 +194,17 @@ Using fzf is fine, and so is writing it from scratch in Go.
   wide for the prompt is drawn as a space, and every line is cut to the
   terminal's width last, as on a very narrow terminal indents and ellipses
   alone ran past the edge.
+- The check before signalling runs ps once for all the selected processes
+  where pidfd works, rather than once per process, which took seconds for a
+  few hundred. kil opens a pidfd for every target first, so that a PID reused
+  after the check is not what the pidfd points to, in batches as large as the
+  open-file limit allows with 64 to spare, up to 256: a batch that took every
+  file left ps unable to start and failed every target. A pidfd keeps the
+  process but not its command across exec, so kil reads each process's command
+  line and name from /proc before the check and again right before its signal,
+  and checks a process whose /proc changed, or cannot be read, again on its
+  own: ps still decides, as a process can rewrite its command line or name
+  itself. Without pidfd, as on macOS, each process is still checked right
+  before its signal, as checking all of them first would leave the PID of the
+  last one longer to be reused. Once a stop is caught, kil starts no further
+  check, as ps can take a while.

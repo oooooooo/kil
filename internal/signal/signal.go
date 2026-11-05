@@ -97,32 +97,24 @@ func (o Outcome) String() string {
 }
 
 // Send signals pid only if current(pid) still returns want, the line the
-// user selected, so that a process that exited and whose PID was reused by
-// an unrelated process is not signalled. stopped, if not nil, is asked
-// after that check, right before the signal is sent, as the check can take
-// a while. When the outcome is Failed, the error says why: the check failed,
-// or the signal did, for example for lack of permission.
+// user selected, as SendAll does for one target.
 func Send(pid int, sig syscall.Signal, want string, current func(int) (string, bool, error), stopped func() bool) (Outcome, error) {
-	// kill(2) treats 0 and negative PIDs as process groups, and -1 as every
-	// process the user may signal.
-	if pid <= 0 {
-		return Skipped, nil
-	}
-	cancelled := false
-	outcome, err := send(pid, sig, func() (bool, error) {
-		line, ok, err := current(pid)
-		if err != nil {
-			return false, fmt.Errorf("checking the process: %w", err)
+	lookup := func(pids []int) (map[int]string, error) {
+		found := map[int]string{}
+		for _, p := range pids {
+			line, ok, err := current(p)
+			if err != nil {
+				return nil, err
+			}
+			if ok {
+				found[p] = line
+			}
 		}
-		if !ok || line != want {
-			return false, nil
-		}
-		cancelled = stopped != nil && stopped()
-		return !cancelled, nil
-	})
-	if cancelled {
-		return Cancelled, nil
+		return found, nil
 	}
+	var outcome Outcome
+	var err error
+	SendAll([]Target{{pid, want}}, sig, lookup, stopped, func(_ int, o Outcome, e error) { outcome, err = o, e })
 	return outcome, err
 }
 
@@ -139,12 +131,158 @@ func outcomeOf(err error) (Outcome, error) {
 	}
 }
 
-// unchecked returns the outcome when the check before signalling did not
-// pass: Failed if the check itself failed, or Skipped if the process changed
-// or exited.
-func unchecked(err error) (Outcome, error) {
-	if err != nil {
-		return Failed, err
+// A Target is a process to signal and the identity it must still have:
+// the line the user selected.
+type Target struct {
+	PID  int
+	Want string
+}
+
+// A Lookup returns the identities of the processes with the given PIDs now.
+// A process that is gone is missing from the map.
+type Lookup func(pids []int) (map[int]string, error)
+
+// batchSize is the most targets SendAll holds a pidfd open for at once,
+// well below the usual limit of 1024 open files.
+const batchSize = 256
+
+// SendAll signals each target only if lookup still gives its identity, so
+// that a process that exited and whose PID was reused by an unrelated one
+// is not signalled, and tells done the outcome of each, in order, with the
+// reason when it is Failed. Where it can, it opens a pidfd for each target
+// before one lookup for all of them, rather than running ps per target,
+// and signals through it, so the signal reaches the process checked even
+// if its PID is reused meanwhile. Elsewhere each target is checked right
+// before its signal, which leaves only that moment for the PID to change.
+// stopped, if not nil, is asked before each target and right before each
+// signal; when it says to stop, done hears Cancelled for that target and
+// SendAll returns, leaving the rest to the caller.
+func SendAll(targets []Target, sig syscall.Signal, lookup Lookup, stopped func() bool, done func(i int, o Outcome, err error)) {
+	for start := 0; start < len(targets); {
+		end := min(start+batchLimit(), len(targets))
+		if !sendBatch(targets[start:end], start, sig, lookup, stopped, done) {
+			return
+		}
+		start = end
 	}
-	return Skipped, nil
+}
+
+func sendBatch(targets []Target, offset int, sig syscall.Signal, lookup Lookup, stopped func() bool, done func(int, Outcome, error)) bool {
+	stop := func() bool { return stopped != nil && stopped() }
+	if stop() {
+		done(offset, Cancelled, nil)
+		return false
+	}
+	type opened struct {
+		h       handle
+		outcome Outcome
+		err     error
+		ok      bool
+		// before is the process's command as the kernel had it before the
+		// lookup, so that one replaced by exec since is not signalled.
+		before string
+		// alone is set for a process checked on its own right before its
+		// signal, rather than with the others.
+		alone bool
+	}
+	handles := make([]opened, len(targets))
+	var pids []int
+	for i, t := range targets {
+		// kill(2) treats 0 and negative PIDs as process groups, and -1
+		// as every process the user may signal.
+		if t.PID <= 0 {
+			handles[i] = opened{outcome: Skipped}
+			continue
+		}
+		h, err := open(t.PID)
+		if err != nil {
+			o, err := outcomeOf(err)
+			handles[i] = opened{outcome: o, err: err}
+			continue
+		}
+		o := opened{h: h, ok: true, alone: h.byPID}
+		if !o.alone {
+			// Read before the lookup, so that an exec at any time after
+			// it shows as a change.
+			o.before, o.alone = h.command(t.PID)
+			o.alone = !o.alone
+		}
+		if !o.alone {
+			pids = append(pids, t.PID)
+		}
+		handles[i] = o
+	}
+	defer func() {
+		for _, o := range handles {
+			if o.ok {
+				o.h.close()
+			}
+		}
+	}()
+	var found map[int]string
+	var lookupErr error
+	if len(pids) > 0 {
+		if stop() {
+			done(offset, Cancelled, nil)
+			return false
+		}
+		found, lookupErr = lookup(pids)
+	}
+	for i, t := range targets {
+		if stop() {
+			done(offset+i, Cancelled, nil)
+			return false
+		}
+		o := handles[i]
+		if !o.ok {
+			done(offset+i, o.outcome, o.err)
+			continue
+		}
+		now, err := found, lookupErr
+		if o.alone {
+			now, err = lookup([]int{t.PID})
+		}
+		if err != nil {
+			done(offset+i, Failed, fmt.Errorf("checking the process: %w", err))
+			continue
+		}
+		if line, ok := now[t.PID]; !ok || line != t.Want {
+			done(offset+i, Skipped, nil)
+			continue
+		}
+		// A process checked with the others may have been replaced by exec
+		// while earlier targets were signalled; a pidfd keeps the process
+		// but not its command. As a process can also rewrite its command
+		// line or name itself, a change is checked again on its own.
+		after, ok := "", true
+		if !o.alone {
+			after, ok = o.h.command(t.PID)
+		}
+		// The check can take a while, as it runs ps, so a stop that came
+		// meanwhile still keeps the signal from being sent.
+		if stop() {
+			done(offset+i, Cancelled, nil)
+			return false
+		}
+		if !o.alone {
+			if !ok || after != o.before {
+				now, err := lookup([]int{t.PID})
+				if err != nil {
+					done(offset+i, Failed, fmt.Errorf("checking the process: %w", err))
+					continue
+				}
+				if line, ok := now[t.PID]; !ok || line != t.Want {
+					done(offset+i, Skipped, nil)
+					continue
+				}
+				if stop() {
+					done(offset+i, Cancelled, nil)
+					return false
+				}
+			}
+		}
+		out, err := outcomeOf(o.h.signal(t.PID, sig))
+		done(offset+i, out, err)
+	}
+	return true
 }

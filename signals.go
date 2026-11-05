@@ -10,6 +10,7 @@ import (
 
 	"github.com/oooooooo/kil/internal/picker"
 	"github.com/oooooooo/kil/internal/proc"
+	"github.com/oooooooo/kil/internal/signal"
 	"github.com/oooooooo/kil/internal/ui"
 )
 
@@ -139,9 +140,9 @@ func exitSignalled(s os.Signal) int {
 	return 128 + int(n)
 }
 
-// currentLine returns a process's line as kil checks it before signalling.
-// Tests replace it to act while the check runs.
-var currentLine = proc.Current
+// lookupLines returns processes' lines as kil checks them before
+// signalling. Tests replace it to act while the check runs.
+var lookupLines signal.Lookup = proc.CurrentAll
 
 // sender returns the function that signals the rows of a partial Enter,
 // holding the reports in b until the picker has ended.

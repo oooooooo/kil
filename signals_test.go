@@ -143,11 +143,11 @@ func TestSignalsWhileSignalling(t *testing.T) {
 func TestStopDuringTheLastCheck(t *testing.T) {
 	target := ownSleeper(t)
 	in := &interrupts{}
-	saved := currentLine
-	t.Cleanup(func() { currentLine = saved })
-	currentLine = func(pid int) (string, bool, error) {
+	saved := lookupLines
+	t.Cleanup(func() { lookupLines = saved })
+	lookupLines = func(pids []int) (map[int]string, error) {
 		in.catch(syscall.SIGTERM)
-		return saved(pid)
+		return saved(pids)
 	}
 	var stdout, stderr bytes.Buffer
 	code := signalAll([]picker.Item{target}, 0, &stdout, &stderr, in)
@@ -161,12 +161,12 @@ func TestStopDuringTheLastCheck(t *testing.T) {
 func TestStopAfterTheLastProcess(t *testing.T) {
 	target := ownSleeper(t)
 	in := &interrupts{}
-	saved := currentLine
-	t.Cleanup(func() { currentLine = saved })
+	saved := lookupLines
+	t.Cleanup(func() { lookupLines = saved })
 	// The process looks changed, so it is skipped rather than cancelled.
-	currentLine = func(int) (string, bool, error) {
+	lookupLines = func(pids []int) (map[int]string, error) {
 		in.catch(syscall.SIGTERM)
-		return "another line", true, nil
+		return map[int]string{pids[0]: "another line"}, nil
 	}
 	var stdout, stderr bytes.Buffer
 	if code := signalAll([]picker.Item{target}, 0, &stdout, &stderr, in); code != 143 {
@@ -264,15 +264,28 @@ func TestSuspendIsIgnored(t *testing.T) {
 // with the reason, not as changed or exited, and is not signalled.
 func TestFailedCheckIsReportedWithItsReason(t *testing.T) {
 	target := ownSleeper(t)
-	saved := currentLine
-	t.Cleanup(func() { currentLine = saved })
-	currentLine = func(int) (string, bool, error) {
-		return "", false, errors.New("ps failed: exit status 2")
+	saved := lookupLines
+	t.Cleanup(func() { lookupLines = saved })
+	lookupLines = func([]int) (map[int]string, error) {
+		return nil, errors.New("ps failed: exit status 2")
 	}
 	var stdout, stderr bytes.Buffer
 	code := signalAll([]picker.Item{target}, 0, &stdout, &stderr, nil)
 	want := "failed: checking the process: ps failed: exit status 2: " + target.Text + "\n"
 	if code != exitProblems || stdout.Len() != 0 || stderr.String() != want {
 		t.Errorf("code %d, stdout %q, stderr %q; want %d and %q", code, stdout.String(), stderr.String(), exitProblems, want)
+	}
+}
+
+// An item without a PID is reported in its place among the others, as
+// before kil signalled them together.
+func TestReportsKeepTheOrderOfTheTargets(t *testing.T) {
+	target := ownSleeper(t)
+	var out bytes.Buffer
+	signalAll([]picker.Item{target, {ID: "x", Text: "not a process"}}, 0, &out, &out, nil)
+	sent := strings.Index(out.String(), "sent ")
+	skipped := strings.Index(out.String(), "skipped: not a PID")
+	if sent < 0 || skipped < 0 || sent > skipped {
+		t.Errorf("reports %q, want the sent line before the skipped one", out.String())
 	}
 }

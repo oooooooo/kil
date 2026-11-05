@@ -2,8 +2,12 @@ package signal
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
+	"slices"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -57,6 +61,15 @@ func startSleep(t *testing.T) *exec.Cmd {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() })
+	// Start can return while the kernel is still setting up the new
+	// command line, which SendAll reads to notice an exec, so where /proc
+	// shows it, wait for it to be sleep's.
+	cmdline := fmt.Sprintf("/proc/%d/cmdline", cmd.Process.Pid)
+	for deadline := time.Now().Add(2 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		if b, err := os.ReadFile(cmdline); err != nil || strings.HasPrefix(string(b), "sleep\x00") {
+			break
+		}
+	}
 	return cmd
 }
 
@@ -189,5 +202,84 @@ func TestParseAcceptsAliases(t *testing.T) {
 		if err != nil || Label(got) != want {
 			t.Errorf("Parse(%q) = %v, %v; want %s", in, Label(got), err, want)
 		}
+	}
+}
+
+// targetsOf starts n sleeping children and returns them as targets whose
+// identity is "line N".
+func targetsOf(t *testing.T, n int) ([]*exec.Cmd, []Target) {
+	t.Helper()
+	var cmds []*exec.Cmd
+	var targets []Target
+	for i := range n {
+		cmd := startSleep(t)
+		cmds = append(cmds, cmd)
+		targets = append(targets, Target{PID: cmd.Process.Pid, Want: fmt.Sprintf("line %d", i)})
+	}
+	return cmds, targets
+}
+
+// lookupOf returns a lookup that finds each target with its identity, and
+// counts how many times it ran.
+func lookupOf(targets []Target, calls *int) Lookup {
+	return func(pids []int) (map[int]string, error) {
+		*calls++
+		found := map[int]string{}
+		for _, pid := range pids {
+			for _, t := range targets {
+				if t.PID == pid {
+					found[pid] = t.Want
+				}
+			}
+		}
+		return found, nil
+	}
+}
+
+// outcomes collects what SendAll reports, in order.
+type outcomes struct {
+	got  []Outcome
+	errs []error
+}
+
+func (o *outcomes) done(i int, out Outcome, err error) {
+	o.got = append(o.got, out)
+	o.errs = append(o.errs, err)
+}
+
+// SendAll reports one outcome per target, in order, and stops at a target
+// it is asked to stop before, leaving the rest to the caller.
+func TestSendAllStopsWhereAsked(t *testing.T) {
+	cmds, targets := targetsOf(t, 3)
+	calls := 0
+	var o outcomes
+	stopped := func() bool { return len(o.got) == 1 }
+	SendAll(targets, syscall.SIGTERM, lookupOf(targets, &calls), stopped, o.done)
+	if !slices.Equal(o.got, []Outcome{Sent, Cancelled}) {
+		t.Fatalf("outcomes = %v, want [sent cancelled]", o.got)
+	}
+	if !exited(cmds[0]) || !stillRunning(cmds[1]) || !stillRunning(cmds[2]) {
+		t.Error("want only the first process signalled")
+	}
+}
+
+// A target whose identity changed is skipped, and a failed lookup fails
+// the targets it was to check, with its reason.
+func TestSendAllSkipsChangedTargetsAndFailsUncheckedOnes(t *testing.T) {
+	cmds, targets := targetsOf(t, 2)
+	targets[1].Want = "another line"
+	calls := 0
+	var o outcomes
+	SendAll(targets, syscall.SIGTERM, lookupOf(targets[:1], &calls), nil, o.done)
+	if !slices.Equal(o.got, []Outcome{Sent, Skipped}) || !exited(cmds[0]) || !stillRunning(cmds[1]) {
+		t.Errorf("outcomes = %v; want [sent skipped] with only the first signalled", o.got)
+	}
+
+	cmds, targets = targetsOf(t, 2)
+	lookupErr := errors.New("ps failed")
+	o = outcomes{}
+	SendAll(targets, syscall.SIGTERM, func([]int) (map[int]string, error) { return nil, lookupErr }, nil, o.done)
+	if !slices.Equal(o.got, []Outcome{Failed, Failed}) || !errors.Is(o.errs[0], lookupErr) || !stillRunning(cmds[0]) || !stillRunning(cmds[1]) {
+		t.Errorf("outcomes = %v, %v; want both failed with the lookup's error and none signalled", o.got, o.errs)
 	}
 }

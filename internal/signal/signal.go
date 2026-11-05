@@ -4,6 +4,7 @@ package signal
 import (
 	"fmt"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -36,10 +37,26 @@ func Parse(s string) (syscall.Signal, error) {
 	if !strings.HasPrefix(name, "SIG") {
 		name = "SIG" + name
 	}
+	if alias, ok := aliases()[name]; ok {
+		name = alias
+	}
 	if sig := unix.SignalNum(name); sig != 0 {
 		return sig, nil
 	}
 	return 0, fmt.Errorf("invalid signal %q", s)
+}
+
+// aliases maps the other names signal.h gives some signals to the names
+// kil reports them by: SIGIOT is SIGABRT on Linux and macOS, and Linux also
+// has SIGCLD for SIGCHLD and SIGPOLL, which procps's kill accepts, for
+// SIGIO.
+func aliases() map[string]string {
+	a := map[string]string{"SIGIOT": "SIGABRT"}
+	if runtime.GOOS == "linux" {
+		a["SIGCLD"] = "SIGCHLD"
+		a["SIGPOLL"] = "SIGIO"
+	}
+	return a
 }
 
 // Label returns the name kil reports for sig, e.g. "SIGKILL".

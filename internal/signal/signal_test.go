@@ -3,6 +3,7 @@ package signal
 import (
 	"errors"
 	"os/exec"
+	"runtime"
 	"syscall"
 	"testing"
 	"time"
@@ -172,5 +173,21 @@ func TestSendReportsWhySignallingFailed(t *testing.T) {
 	got, err := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("the line", true), nil)
 	if got != Failed || !errors.Is(err, unix.EPERM) {
 		t.Errorf("Send() = %v, %v; want Failed with EPERM", got, err)
+	}
+}
+
+// The aliases signal.h defines, such as IOT for ABRT, name the same
+// signal, which kil reports by its usual name.
+func TestParseAcceptsAliases(t *testing.T) {
+	tests := map[string]string{"IOT": "SIGABRT", "SIGIOT": "SIGABRT", "iot": "SIGABRT"}
+	if runtime.GOOS == "linux" {
+		tests["CLD"] = "SIGCHLD"
+		tests["POLL"] = "SIGIO"
+	}
+	for in, want := range tests {
+		got, err := Parse(in)
+		if err != nil || Label(got) != want {
+			t.Errorf("Parse(%q) = %v, %v; want %s", in, Label(got), err, want)
+		}
 	}
 }

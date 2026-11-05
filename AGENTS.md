@@ -146,7 +146,14 @@ Using fzf is fine, and so is writing it from scratch in Go.
   status 1 both for a PID that is gone and for an error, and only an error
   writes to stderr; reported as skipped, a check kil could not make looked
   like a process that had exited. Every `failed:` report gives the reason
-  before the line, as `skipped:` does, so the line is always last.
+  before the line, as `skipped:` does, so the line is always last. ps on macOS
+  reports some failures on stderr and still exits 0, so anything on stderr is
+  a failure too. What ps wrote goes into the report as one line with control
+  characters shown as `?`, as it could otherwise forge report lines or send
+  escape sequences to the terminal. kil gives ps `LINES=24` and `COLUMNS=80`
+  in place of its own, as procps warns on stderr about a screen size it finds
+  bogus, such as a one-row terminal or `LINES=1`, which it reads from the
+  terminal unless those are set; kil asks for whole lines anyway.
 - On Linux, kil signals through a pidfd and falls back to checking and then
   `kill(2)` only when pidfd also fails for kil itself: opening a pidfd for its
   own PID, or signalling itself with signal 0 through it, as Go's os package
@@ -164,4 +171,7 @@ Using fzf is fine, and so is writing it from scratch in Go.
   CVE-2026-90773 in procs did, or make its command line read as another one.
   tcell writes control characters to the terminal as they are, and kil's
   drawing reads its colors from escape sequences in the rendered text, so rows
-  are cleaned again where they are drawn.
+  are cleaned again where they are drawn. The identity the check before
+  signalling compares keeps the characters shown as `?`: built from the
+  cleaned line, it took a command line changed from one bidirectional control
+  to another for the same process.

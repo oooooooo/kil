@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -281,7 +282,7 @@ func TestCurrentErrorIncludesWhatPsWrote(t *testing.T) {
 // ps on macOS prints a command line as it is, so a process could put
 // terminal control sequences in it and repaint kil's screen or the
 // terminal kil reports to. Control characters and invalid UTF-8 become
-// "?", as procps prints them on Linux.
+// "?" on screen, as procps prints them on Linux.
 func TestParseReplacesControlCharacters(t *testing.T) {
 	listing := "  101     1 alice    /bin/x \x1b]0;pwn\x07 \x1b[31mred\x7f \u009b2J \xff\n"
 	got, err := Parse(listing, "  101     1 ev\x1b[2Jil\n")
@@ -295,7 +296,9 @@ func TestParseReplacesControlCharacters(t *testing.T) {
 	if got[0].Raw != wantRaw {
 		t.Errorf("Raw = %q, want %q", got[0].Raw, wantRaw)
 	}
-	wantID := "101\talice\tev?[2Jil\t/bin/x ?]0;pwn? ?[31mred? ?2J ?"
+	// The identity, which is never shown, keeps them, so that the check
+	// before signalling still tells processes apart.
+	wantID := "101\talice\tev\x1b[2Jil\t/bin/x \x1b]0;pwn\x07 \x1b[31mred\x7f \u009b2J \xff"
 	if got[0].Identity != wantID {
 		t.Errorf("Identity = %q, want %q", got[0].Identity, wantID)
 	}
@@ -396,4 +399,95 @@ func procUID(pid int) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// Characters shown as "?" still tell processes apart: a command line that
+// changed from one bidirectional control to another is a different process
+// to the check before signalling, though both are shown alike.
+func TestIdentityKeepsWhatTheScreenReplaces(t *testing.T) {
+	a, err := Parse("  1 0 alice /x \u202Ea\n", "  1 0 x\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Parse("  1 0 alice /x \u202Da\n", "  1 0 x\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a[0].Raw != b[0].Raw {
+		t.Fatalf("Raw = %q and %q, want both shown alike", a[0].Raw, b[0].Raw)
+	}
+	if a[0].Identity == b[0].Identity {
+		t.Errorf("Identity = %q for both, want them to differ", a[0].Identity)
+	}
+}
+
+// ps on macOS reports some failures on stderr and still exits 0, so
+// anything on stderr is a failure, not a missing process.
+func TestCurrentReportsAPsThatWritesToStderr(t *testing.T) {
+	fakePS(t, "echo 'Failure calling sysctl: Operation not permitted' >&2; exit 0")
+	if _, ok, err := Current(os.Getpid()); err == nil || !strings.Contains(err.Error(), "sysctl") {
+		t.Errorf("Current() = %v, %v; want an error with what ps wrote", ok, err)
+	}
+}
+
+// What ps wrote reaches the report as one line with control characters
+// shown as "?", so that it can neither send escape sequences to the
+// terminal nor forge report lines.
+func TestCurrentErrorShowsPsMessageSafely(t *testing.T) {
+	fakePS(t, `printf '\033[2J\nfailed: forged report\n' >&2; exit 1`)
+	_, _, err := Current(os.Getpid())
+	if err == nil {
+		t.Fatal("Current() succeeded, want an error")
+	}
+	if msg := err.Error(); strings.ContainsAny(msg, "\x1b\n") {
+		t.Errorf("error = %q, want one line without control characters", msg)
+	}
+}
+
+// procps cuts user names to 8 characters unless the column is widened, so
+// on Linux kil asks for a wider one.
+func TestListWidensTheUserColumnOnLinux(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("only procps cuts user names")
+	}
+	args := filepath.Join(t.TempDir(), "args")
+	fakePS(t, `echo "$@" >> '`+args+`'`)
+	if _, err := List(0); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "user:64=") {
+		t.Errorf("ps ran with %q, want user:64=", got)
+	}
+}
+
+// Only the padding ps adds is trimmed: a command line that gained a
+// trailing line separator is a different process to the check before
+// signalling.
+func TestIdentityKeepsTrailingUnicodeSpaces(t *testing.T) {
+	a, err := Parse("  12 1 alice /x\n", "  12 1 x\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := Parse("  12 1 alice /x\u2028\n", "  12 1 x\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a[0].Identity == b[0].Identity {
+		t.Errorf("Identity = %q for both, want them to differ", a[0].Identity)
+	}
+}
+
+// procps warns about a bogus screen size on stderr and still lists every
+// process; kil never needs a screen size from ps, as it asks for whole
+// lines, so the warning must not fail the listing.
+func TestListIgnoresTheScreenSize(t *testing.T) {
+	t.Setenv("LINES", "1")
+	t.Setenv("COLUMNS", "1")
+	if _, err := List(0); err != nil {
+		t.Errorf("List() with a 1x1 screen: %v", err)
+	}
 }

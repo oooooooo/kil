@@ -14,7 +14,7 @@ import (
 // open, as on macOS.
 func send(pid int, sig syscall.Signal, unchanged func() (bool, error)) (Outcome, error) {
 	fd, err := pidfdOpen(pid, 0)
-	if err != nil && err != unix.ESRCH && pidfdUnavailable() {
+	if fallsBack(err) {
 		return sendWithKill(pid, sig, unchanged)
 	}
 	if err != nil {
@@ -25,7 +25,7 @@ func send(pid int, sig syscall.Signal, unchanged func() (bool, error)) (Outcome,
 		return unchecked(err)
 	}
 	err = pidfdSendSignal(fd, sig, nil, 0)
-	if err != nil && err != unix.ESRCH && pidfdUnavailable() {
+	if fallsBack(err) {
 		// The process was checked through the pidfd, which kil can open
 		// but not signal through, so its PID is signalled, as on a system
 		// without pidfd.
@@ -54,7 +54,15 @@ func pidfdUnavailable() bool {
 		return !outOfResources(err)
 	}
 	defer func() { _ = unix.Close(fd) }()
-	return pidfdSendSignal(fd, 0, nil, 0) != nil
+	err = pidfdSendSignal(fd, 0, nil, 0)
+	return err != nil && !outOfResources(err)
+}
+
+// fallsBack reports whether err, from opening a pidfd for the target or
+// signalling through it, means kil should signal its PID instead: pidfd is
+// unavailable, not the target gone nor resources short.
+func fallsBack(err error) bool {
+	return err != nil && err != unix.ESRCH && !outOfResources(err) && pidfdUnavailable()
 }
 
 func outOfResources(err error) bool {

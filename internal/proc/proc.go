@@ -102,16 +102,25 @@ func Parse(listing, names string) ([]Process, error) {
 		if !ok {
 			continue
 		}
-		procs = append(procs, Process{PID: pid, PPID: ppid, User: user, Comm: comm, Args: strings.TrimSpace(args)})
+		args = strings.Trim(args, " ")
+		procs = append(procs, Process{
+			PID: pid, PPID: ppid,
+			User: printable(user), Comm: printable(comm), Args: printable(args),
+			// The identity keeps what the screen shows as "?", so that the
+			// check before signalling still tells processes apart.
+			Identity: strings.Join([]string{strconv.Itoa(pid), user, comm, args}, "\t"),
+		})
 	}
 	layOut(procs)
 	return procs, nil
 }
 
-// splitIDs splits a ps line into its PID, its PPID, and the rest, with
-// control characters replaced. An empty line gives a PID of 0.
+// splitIDs splits a ps line into its PID, its PPID, and the rest, as ps
+// printed it. Only the line's end and the spaces ps pads columns with are
+// trimmed: other white space, such as a trailing U+2028, is part of the
+// process's identity. An empty line gives a PID of 0.
 func splitIDs(line string) (pid, ppid int, rest string, err error) {
-	line = strings.TrimSpace(printable(strings.TrimRight(line, "\n")))
+	line = strings.Trim(strings.TrimSuffix(line, "\n"), " ")
 	if line == "" {
 		return 0, 0, "", nil
 	}
@@ -127,7 +136,7 @@ func splitIDs(line string) (pid, ppid int, rest string, err error) {
 	if err != nil || ppid < 0 {
 		return 0, 0, "", fmt.Errorf("unexpected PPID in ps line: %q", line)
 	}
-	return pid, ppid, strings.TrimSpace(rest), nil
+	return pid, ppid, strings.Trim(rest, " "), nil
 }
 
 // commWidth is the most columns a command name takes on screen. ps on macOS
@@ -136,8 +145,8 @@ func splitIDs(line string) (pid, ppid int, rest string, err error) {
 // until the command lines were off screen. Linux keeps names to 15.
 const commWidth = 16
 
-// layOut sets each process's Identity, and its Raw line with the columns
-// padded to the widest value among procs, as ps pads them.
+// layOut sets each process's Raw line, with the columns padded to the
+// widest value among procs, as ps pads them.
 func layOut(procs []Process) {
 	var pidW, ppidW, userW, commW int
 	for _, p := range procs {
@@ -148,7 +157,6 @@ func layOut(procs []Process) {
 	}
 	for i := range procs {
 		p := &procs[i]
-		p.Identity = strings.Join([]string{strconv.Itoa(p.PID), p.User, p.Comm, p.Args}, "\t")
 		comm := widths.Truncate(p.Comm, commWidth, "")
 		frozen := fmt.Sprintf("%*d %*d %s %s ", pidW, p.PID, ppidW, p.PPID, pad(p.User, userW), pad(comm, commW))
 		p.Frozen = utf8.RuneCountInString(frozen)
@@ -217,24 +225,34 @@ func descendsFrom(pid, ancestor int, parent map[int]int) bool {
 	return false
 }
 
-// psSyntax lists the variables procps reads its option syntax from. With
-// BSD syntax, such as PS_PERSONALITY=bsd, it rejects kil's options.
-var psSyntax = []string{"PS_PERSONALITY", "CMD_ENV", "I_WANT_A_BROKEN_PS"}
+// psUnset lists the variables ps must not see from kil's environment.
+// procps reads its option syntax from the first three, and with BSD syntax,
+// such as PS_PERSONALITY=bsd, it rejects kil's options.
+var psUnset = []string{"PS_PERSONALITY", "CMD_ENV", "I_WANT_A_BROKEN_PS", "LINES", "COLUMNS"}
+
+// psScreen is the screen size ps gets. procps warns on stderr about a size
+// it finds bogus, such as one row, which kil takes as a failure, and reads
+// the size from the terminal unless LINES and COLUMNS give it. kil asks for
+// whole lines, so the size changes nothing else.
+var psScreen = []string{"LINES=24", "COLUMNS=80"}
 
 // ps returns a ps command printing columns of the selected processes.
 func ps(columns string, selection ...string) *exec.Cmd {
 	cmd := exec.Command("ps", append(append([]string{psWide}, selection...), "-o", columns)...)
-	cmd.Env = slices.DeleteFunc(os.Environ(), func(kv string) bool {
+	cmd.Env = append(slices.DeleteFunc(os.Environ(), func(kv string) bool {
 		name, _, _ := strings.Cut(kv, "=")
-		return slices.Contains(psSyntax, name)
-	})
+		return slices.Contains(psUnset, name)
+	}), psScreen...)
 	return cmd
 }
 
 // output runs ps with columns for the selected processes. ps, on Linux and
 // macOS, exits with status 1 and prints nothing when no process is
 // selected, which gives no output and no error. It also exits with 1 on
-// errors, but then says why, which is part of the error.
+// errors, but then says why, and on macOS it says why and still exits 0 on
+// some, so anything on stderr is a failure. What ps said is part of the
+// error, as one line with control characters shown as "?", as kil prints
+// it in reports.
 func output(columns string, selection ...string) (string, error) {
 	cmd := ps(columns, selection...)
 	var stderr bytes.Buffer
@@ -244,11 +262,14 @@ func output(columns string, selection ...string) (string, error) {
 	if errors.As(err, &exit) && exit.ExitCode() == 1 && len(out) == 0 && stderr.Len() == 0 {
 		return "", nil
 	}
-	if err != nil {
-		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			return "", fmt.Errorf("ps failed: %w: %s", err, msg)
-		}
+	msg := printable(strings.TrimSpace(stderr.String()))
+	switch {
+	case err != nil && msg != "":
+		return "", fmt.Errorf("ps failed: %w: %s", err, msg)
+	case err != nil:
 		return "", fmt.Errorf("ps failed: %w", err)
+	case msg != "":
+		return "", fmt.Errorf("ps failed: %s", msg)
 	}
 	return string(out), nil
 }

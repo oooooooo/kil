@@ -136,3 +136,48 @@ func TestSendFailsWhenOutOfFileDescriptors(t *testing.T) {
 		})
 	}
 }
+
+// Running out of file descriptors or memory while signalling, or while
+// probing pidfd, is not a system without pidfd either.
+func TestSendDoesNotFallBackOnResourceErrorsAnywhere(t *testing.T) {
+	t.Run("signal", func(t *testing.T) {
+		cmd := startSleep(t)
+		failPidfdSignal(t, unix.ENOMEM, func(unix.Signal) bool { return true })
+		got, err := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("the line", true), nil)
+		if got != Failed || !errors.Is(err, unix.ENOMEM) {
+			t.Errorf("Send() = %v, %v; want Failed with ENOMEM", got, err)
+		}
+		if !stillRunning(cmd) {
+			t.Error("process was signalled")
+		}
+	})
+	t.Run("open, with the probe denied", func(t *testing.T) {
+		cmd := startSleep(t)
+		target := cmd.Process.Pid
+		failPidfdOpen(t, unix.ENOMEM, func(pid int) bool { return pid == target })
+		failPidfdOpen(t, unix.EPERM, func(pid int) bool { return pid != target })
+		got, err := Send(target, syscall.SIGTERM, "the line", fixed("the line", true), nil)
+		if got != Failed || !errors.Is(err, unix.ENOMEM) {
+			t.Errorf("Send() = %v, %v; want Failed with ENOMEM", got, err)
+		}
+		if !stillRunning(cmd) {
+			t.Error("process was signalled")
+		}
+	})
+}
+
+// A probe that fails for lack of memory while signalling kil itself does
+// not show that pidfd is unavailable, so a target's own failure is
+// reported rather than its PID signalled.
+func TestSendDoesNotFallBackWhenTheProbeSignalLacksResources(t *testing.T) {
+	cmd := startSleep(t)
+	failPidfdSignal(t, unix.EPERM, func(sig unix.Signal) bool { return sig != 0 })
+	failPidfdSignal(t, unix.ENOMEM, func(sig unix.Signal) bool { return sig == 0 })
+	got, err := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("the line", true), nil)
+	if got != Failed || !errors.Is(err, unix.EPERM) {
+		t.Errorf("Send() = %v, %v; want Failed with EPERM", got, err)
+	}
+	if !stillRunning(cmd) {
+		t.Error("process was signalled")
+	}
+}

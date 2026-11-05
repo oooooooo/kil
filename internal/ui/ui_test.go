@@ -1375,3 +1375,126 @@ func TestFrozenColumnsEndWhereTheItemSays(t *testing.T) {
 		t.Errorf("row = %q, want it to start with the whole frozen columns, then the ellipsis", row)
 	}
 }
+
+// infoText returns the info line, above the prompt.
+func infoText(m Model) string {
+	lines := viewLines(m)
+	return lines[len(lines)-2]
+}
+
+// Enter pressed while it waits for rows that just came on screen says so
+// on the info line, as nothing else shows why it did nothing, until the
+// wait ends.
+func TestEnterThatWaitsSaysSo(t *testing.T) {
+	var r recorder
+	m := New(items(numberedLines(30)...), "", "SIGKILL", noReload).WithSender(r.send)
+	m, _ = press(m, alt('a'))
+	m = resized(m, 80, 5)
+	if strings.Contains(infoText(m), "Enter ignored") {
+		t.Fatalf("info line says Enter is ignored before Enter was pressed: %q", infoText(m))
+	}
+	m, _ = press(m, key(KeyEnter))
+	if len(r.sent) != 0 || !strings.Contains(infoText(m), "Enter ignored") {
+		t.Fatalf("Enter while waiting: sent %v, info line %q; want nothing sent and \"Enter waits\"", r.sent, infoText(m))
+	}
+	m = settled(m)
+	if strings.Contains(infoText(m), "Enter ignored") {
+		t.Errorf("info line still says Enter is ignored after the wait ended: %q", infoText(m))
+	}
+}
+
+// Enter pressed while Ctrl-R lists the processes again says so too, until
+// the list is read.
+func TestEnterDuringAReloadSaysSo(t *testing.T) {
+	m := sized(New(items("101 a"), "", "SIGKILL", func() ([]picker.Item, error) { return items("101 a"), nil }))
+	m, cmd := press(m, ctrl('r'))
+	m, _ = press(m, key(KeyEnter))
+	if m.Outcome() != Running || !strings.Contains(infoText(m), "Enter ignored") {
+		t.Fatalf("Enter during a reload: Outcome() = %v, info line %q; want Running and \"Enter waits\"", m.Outcome(), infoText(m))
+	}
+	m, _ = press(m, cmd())
+	if strings.Contains(infoText(m), "Enter ignored") {
+		t.Errorf("info line still says Enter is ignored after the reload: %q", infoText(m))
+	}
+}
+
+// enterIgnored reports whether the info line says Enter was ignored, where
+// it fits on screen.
+func enterIgnored(t *testing.T, m Model) bool {
+	t.Helper()
+	line := infoText(m)
+	i := strings.Index(line, "Enter ignored")
+	if i < 0 {
+		return false
+	}
+	if end := ansi.StringWidth(line[:i]) + len("Enter ignored"); end > m.width {
+		t.Errorf("info line %q says Enter was ignored past column %d", line, m.width)
+	}
+	return true
+}
+
+// A reload that brings a selection back on screen starts a wait, so Enter
+// pressed during the reload is still ignored after it, as the info line
+// still says.
+func TestEnterIgnoredAcrossAReloadThatShowsASelection(t *testing.T) {
+	reload := func() ([]picker.Item, error) { return items(numberedLines(3)...), nil }
+	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", reload), 80, 10)
+	m, _ = press(m, key(KeyTab, ModShift))
+	for range 20 {
+		m, _ = press(m, key(KeyUp))
+	}
+	m = settled(m)
+	if shown, _ := m.selectedOnScreen(); len(shown) != 0 {
+		t.Fatalf("the selection is still on screen:\n%s", plain(m.render()))
+	}
+	m, cmd := press(m, ctrl('r'))
+	m, _ = press(m, key(KeyEnter))
+	m, _ = press(m, cmd())
+	if !m.waiting() || !enterIgnored(t, m) {
+		t.Errorf("after the reload: waiting %v, info line %q; want a wait the info line tells", m.waiting(), infoText(m))
+	}
+}
+
+// Once nothing holds Enter, an Enter ignored earlier is forgotten: a later
+// reload must not say Enter was ignored when it was not pressed.
+func TestEnterIgnoredIsForgottenOnceNothingHoldsIt(t *testing.T) {
+	m := New(items(numberedLines(30)...), "", "SIGKILL", func() ([]picker.Item, error) { return items(numberedLines(30)...), nil })
+	m = resized(m, 80, 10)
+	m, _ = press(m, alt('a'), key(KeyEnter), alt('a'))
+	if m.waiting() {
+		t.Fatalf("still waiting after deselecting:\n%s", plain(m.render()))
+	}
+	m, _ = press(m, ctrl('r'))
+	if enterIgnored(t, m) {
+		t.Errorf("info line %q says Enter was ignored, but it was not pressed during the reload", infoText(m))
+	}
+}
+
+// After a partial Enter the info line is long, so the notice comes first,
+// where a narrow terminal still shows it.
+func TestEnterIgnoredFitsANarrowTerminal(t *testing.T) {
+	var r recorder
+	m := offscreenSelections(&r)
+	m = resized(settled(m), 50, 10)
+	m, _ = press(settled(m), key(KeyEnter), key(KeyEnter))
+	if len(r.sent) != 1 || !enterIgnored(t, m) {
+		t.Errorf("Enter right after a partial Enter: sent %d batches, info line %q; want one and the notice on screen", len(r.sent), infoText(m))
+	}
+}
+
+// In the help and the [Y/n] question Enter does something else, closing the
+// help or answering, so the info line does not say it is ignored.
+func TestEnterIgnoredIsNotShownWhereEnterDoesSomethingElse(t *testing.T) {
+	var r recorder
+	m := offscreenSelections(&r)
+	m, _ = press(settled(m), key(KeyEnter), key(KeyEnter))
+	if !enterIgnored(t, m) {
+		t.Fatalf("info line %q does not say Enter was ignored", infoText(m))
+	}
+	if help, _ := press(m, alt('h')); enterIgnored(t, help) {
+		t.Errorf("in the help, info line %q says Enter is ignored", infoText(help))
+	}
+	if question, _ := press(m, key(KeyEsc)); !question.confirming || enterIgnored(t, question) {
+		t.Errorf("in the question (confirming %v), info line %q says Enter is ignored", question.confirming, infoText(question))
+	}
+}

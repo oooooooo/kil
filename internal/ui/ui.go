@@ -58,6 +58,10 @@ type Model struct {
 	fresh     map[string]int
 	redrawGen int
 	settleGen int
+	// enterHeld is set when Enter was ignored because of such a wait or a
+	// reload, which the info line then says until both have ended, as
+	// nothing else showed that Enter did nothing.
+	enterHeld bool
 }
 
 // settledMsg ends the wait numbered gen and every earlier one.
@@ -143,6 +147,16 @@ func (m Model) Update(msg Msg) (Model, Cmd) {
 	if m.outcome != Running {
 		return m, nil
 	}
+	nm, cmd := m.track(msg)
+	// An ignored Enter is forgotten once nothing holds Enter, which is
+	// known only after the rows that came on screen started their waits.
+	nm.enterHeld = nm.enterHeld && (nm.reloading || nm.waiting())
+	return nm, cmd
+}
+
+// track handles msg and starts a wait for the selected rows it brings on
+// screen.
+func (m Model) track(msg Msg) (Model, Cmd) {
 	// The picker is shared with the next model, so what is on screen now
 	// is taken before it changes.
 	drawn := m.drawnIDs()
@@ -299,8 +313,12 @@ func (m Model) handleKey(k KeyPressMsg) (Model, Cmd) {
 		m.outcome = Aborted
 		return m, Quit
 	case "enter":
+		if m.reloading || m.waiting() {
+			m.enterHeld = true
+			return m, nil
+		}
 		// Without room for rows, the cursor row is not on screen.
-		if m.reloading || m.waiting() || m.bodyHeight() == 0 {
+		if m.bodyHeight() == 0 {
 			return m, nil
 		}
 		if shown, offscreen := m.selectedOnScreen(); offscreen {

@@ -103,13 +103,19 @@ Using fzf is fine, and so is writing it from scratch in Go.
   own, so rows that keep coming on screen do not hold `Enter` for rows shown
   long before. Waiting only after a partial `Enter`, or only for rows already
   selected, still let quick keys signal unseen rows, such as `Up`, `Alt-A`,
-  `Enter`. The cursor row alone does not wait, so typing a query and pressing
-  `Enter` at once works as in fzf. The picker ends as soon as the outcome is
-  decided, and ignores anything handled after it, as `Ctrl-C` then `Enter`
-  once signalled rows. `Alt-A` likewise selects only the rows on screen and
-  then scrolls to keep the rows it selected there, with the rows on screen
-  that were selected before it, so that `Alt-A` again deselects them rather
-  than select rows the scroll brought on screen.
+  `Enter`. An `Enter` ignored so, or during a `Ctrl-R` reload, is not kept for
+  later, but the info line says it was ignored, first so that a narrow
+  terminal shows it, until nothing holds `Enter`: with nothing on screen, even
+  a script did not notice its `Enter` had done nothing. The help and the
+  `[Y/n]` question do not say it, as `Enter` closes or answers them. A
+  terminal of two lines has no info line, as it keeps a row and the prompt, so
+  it does not say it either. The cursor row alone does not wait, so typing a
+  query and pressing `Enter` at once works as in fzf. The picker ends as soon
+  as the outcome is decided, and ignores anything handled after it, as
+  `Ctrl-C` then `Enter` once signalled rows. `Alt-A` likewise selects only the
+  rows on screen and then scrolls to keep the rows it selected there, with the
+  rows on screen that were selected before it, so that `Alt-A` again deselects
+  them rather than select rows the scroll brought on screen.
 - Once the process list is read, kil catches `SIGHUP`, `SIGINT`, `SIGTERM`,
   and `SIGQUIT` and ends with 128 plus the signal's number after restoring the
   terminal and reporting what it signalled. Left to their default actions,

@@ -328,6 +328,15 @@ func lastClusters(s string, width int) string {
 
 func (m Model) infoLine(shown int) string {
 	info := fmt.Sprintf("%d/%d (%d)", shown, m.picker.Total(), m.picker.SelectedCount())
+	// An ignored Enter comes first, where a narrow terminal still shows it.
+	// In the help and the question, Enter closes or answers instead.
+	if m.enterHeld && !m.help && !m.confirming {
+		reason := "rows just shown"
+		if m.reloading {
+			reason = "Ctrl-R running"
+		}
+		info = "Enter ignored: " + reason + "  " + info
+	}
 	if m.picker.Exact() {
 		info += " [exact]"
 	}

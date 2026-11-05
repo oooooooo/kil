@@ -7,7 +7,15 @@ import (
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/uniseg"
+
+	termwidth "github.com/oooooooo/kil/internal/width"
 )
+
+// tcell sets uniseg's ambiguous width from RUNEWIDTH_EASTASIAN as it
+// starts, more loosely than kil, taking "yes" for wide too. This package
+// imports tcell, so it starts after it, and makes ambiguous-width
+// characters narrow until kil says otherwise.
+func init() { termwidth.SetAmbiguousWide(false) }
 
 // Control is how kil drives the event loop from outside it.
 type Control struct {
@@ -243,11 +251,6 @@ func keyMsg(ev *tcell.EventKey) (KeyPressMsg, bool) {
 // draw puts the rendered screen on s and shows it. render's lines carry SGR
 // sequences for colors and bold only, which are turned into tcell styles.
 func draw(s tcell.Screen, m Model) {
-	// render lays out ambiguous-width characters such as ·, ▌, ─, and │ one
-	// column wide, as widths does, and tcell must draw them so. tcell makes
-	// them two wide when RUNEWIDTH_EASTASIAN is set, which would push the
-	// rest of each row out of place.
-	uniseg.EastAsianAmbiguousWidth = 1
 	s.Clear()
 	// Without colors, as with NO_COLOR, tcell stands reverse video in for
 	// some colors, which marks cells for no reason, so none are set.

@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
-	"github.com/mattn/go-runewidth"
 	"github.com/rivo/uniseg"
 
 	"github.com/oooooooo/kil/internal/picker"
+	termwidth "github.com/oooooooo/kil/internal/width"
 )
 
 // The palette is fzf's default 256-color theme, so kil looks like the
@@ -29,11 +30,6 @@ const (
 	colorPPID         = 243
 	colorUser         = 73
 )
-
-// widths measures text as fzf and terminals draw it. The default condition
-// follows the locale and counts ambiguous-width characters such as ·, ▌, ─,
-// and │ as two columns in East Asian locales, which would cut rows short.
-var widths = &runewidth.Condition{EastAsianWidth: false}
 
 func fg(c int) string { return fmt.Sprintf("\x1b[38;5;%dm", c) }
 func bg(c int) string { return fmt.Sprintf("\x1b[48;5;%dm", c) }
@@ -162,13 +158,13 @@ func (m Model) render() string {
 	for i := end - 1; i >= offset; i-- {
 		var line string
 		if body[i] == separator {
-			line = fg(colorBorder) + "  " + strings.Repeat("─", min(20, max(m.width-3, 0))) + reset
+			line = fg(colorBorder) + "  " + repeatTo("─", min(20, m.width-3)) + reset
 		} else {
 			r := rows[body[i]]
 			line = m.renderRow(r, body[i] == m.picker.Cursor())
 		}
 		if scrollbar[i-offset] {
-			line = padTo(line, m.width-1) + fg(colorBorder) + "│" + reset
+			line = padTo(line, m.width-columns("│")) + fg(colorBorder) + "│" + reset
 		}
 		lines = append(lines, line)
 	}
@@ -187,7 +183,7 @@ func (m Model) render() string {
 		// explanation rather than the answers.
 		question := "Quit? [Y/n]"
 		why := fmt.Sprintf("%d selected processes were not signalled.", m.picker.SelectedCount())
-		switch room := m.width - 2 - widths.StringWidth(question); {
+		switch room := m.width - 2 - termwidth.String(question); {
 		case room >= 10:
 			question = cut(why, room) + " " + question
 		case room < -1:
@@ -207,6 +203,12 @@ func (m Model) render() string {
 		lines = m.helpLines(helpHeight)
 	}
 	lines = append(lines, footer...)
+	// The parts above keep to the width as well as they can, but on a very
+	// narrow terminal their indents and ellipses alone can be wider, and a
+	// line drawn past the edge is cut by the terminal anywhere.
+	for i, line := range lines {
+		lines[i] = clip(line, m.width)
+	}
 	return strings.Join(lines, "\n")
 }
 
@@ -282,11 +284,17 @@ func (m Model) promptText() string {
 	if pos < len(r) {
 		caret = string(r[pos])
 	}
-	room := max(m.width-2, 1) - widths.StringWidth(caret) // after "> "
+	// A caret too wide for the prompt, as an ambiguous-width character
+	// drawn wide on a terminal of three columns, is drawn as a space, so
+	// that the caret still shows.
+	if termwidth.String(caret) > max(m.width-2, 1) {
+		caret = " "
+	}
+	room := max(m.width-2, 1) - termwidth.String(caret) // after "> "
 	before := lastClusters(string(r[:pos]), room)
 	after := ""
 	if pos < len(r) {
-		after = firstClusters(string(r[pos+1:]), room-widths.StringWidth(before))
+		after = firstClusters(string(r[pos+1:]), room-termwidth.String(before))
 	}
 	return bold + before + reset + "\x1b[7m" + caret + reset + bold + after + reset
 }
@@ -297,7 +305,7 @@ func firstClusters(s string, width int) string {
 	end, used := 0, 0
 	g := uniseg.NewGraphemes(s)
 	for g.Next() {
-		w := widths.StringWidth(g.Str())
+		w := termwidth.String(g.Str())
 		if used+w > width {
 			break
 		}
@@ -316,7 +324,7 @@ func lastClusters(s string, width int) string {
 	for g.Next() {
 		from, _ := g.Positions()
 		starts = append(starts, from)
-		ws = append(ws, widths.StringWidth(g.Str()))
+		ws = append(ws, termwidth.String(g.Str()))
 	}
 	start, used := len(s), 0
 	for i := len(ws) - 1; i >= 0 && used+ws[i] <= width; i-- {
@@ -344,8 +352,8 @@ func (m Model) infoLine(shown int) string {
 		info += fmt.Sprintf(" sent %d, %d selected left: Enter to send", m.sent, m.picker.SelectedCount())
 	}
 	// As in fzf, the rule stops one column short of the edge.
-	rule := max(m.width-2-widths.StringWidth(info)-2, 0)
-	return "  " + fg(colorInfo) + info + reset + " " + fg(colorBorder) + strings.Repeat("─", rule) + reset
+	rule := m.width - 2 - columns(info) - 2
+	return "  " + fg(colorInfo) + info + reset + " " + fg(colorBorder) + repeatTo("─", rule) + reset
 }
 
 // renderRow draws one row as fzf does: a gutter, a selection marker, and the
@@ -353,14 +361,17 @@ func (m Model) infoLine(shown int) string {
 // is visible when the line is wider than the screen.
 func (m Model) renderRow(r picker.Row, focused bool) string {
 	gutter := fg(colorGutter) + "▌" + reset
-	marker := " "
+	// The marker of a row not selected takes as many columns as "┃", which
+	// is two on a terminal that draws ambiguous-width characters wide.
+	blank := strings.Repeat(" ", columns("┃"))
+	marker := blank
 	if r.Selected {
 		marker = fg(colorMarker) + "┃" + reset
 	}
 	base := style{fg: noColor, bg: noColor}
 	if focused {
 		gutter = bold + bg(colorCursorBg) + fg(colorPointer) + "▌" + reset
-		marker = bg(colorCursorBg) + " " + reset
+		marker = bg(colorCursorBg) + blank + reset
 		if r.Selected {
 			marker = bg(colorCursorBg) + fg(colorMarker) + "┃" + reset
 		}
@@ -396,7 +407,25 @@ func (m Model) renderRow(r picker.Row, focused bool) string {
 		}
 	}
 
-	width := max(m.width-3, 1) // gutter, marker, and the scrollbar column
+	// A cluster is drawn in one style, matched if any of its runes is, as a
+	// style change inside it splits it where tcell draws it.
+	ends, _ := clusters(text)
+	start := 0
+	for _, end := range ends {
+		st := styles[start]
+		for i := start; i < end; i++ {
+			if styles[i].fg == colorMatch || styles[i].fg == colorMatchFocused {
+				st = styles[i]
+				break
+			}
+		}
+		for i := start; i < end; i++ {
+			styles[i] = st
+		}
+		start = end
+	}
+
+	width := max(m.width-columns("▌")-columns("┃")-columns("│"), 1) // gutter, marker, and the scrollbar column
 	matchEnd := 0
 	if len(positions) > 0 {
 		matchEnd = positions[len(positions)-1] + 1
@@ -407,7 +436,7 @@ func (m Model) renderRow(r picker.Row, focused bool) string {
 	// row is. Only the command line after them scrolls to show the match.
 	frozen := min(r.Item.Frozen, len(text))
 	frozenWidth := runesWidth(text[:frozen])
-	if frozenWidth+widths.StringWidth(ellipsis) >= width {
+	if frozenWidth+termwidth.String(ellipsis) >= width {
 		// No room to scroll: cut the whole line on the right.
 		frozen, frozenWidth, matchEnd = 0, 0, 0
 	}
@@ -450,38 +479,105 @@ const hscrollOff = 10
 // fzf's printHighlighted: when the last match, plus hscrollOff columns,
 // would be off screen, the line is shifted left until it fits.
 func visibleRange(text []rune, matchEnd, width int) (from, to int, cutLeft, cutRight bool) {
-	if runesWidth(text) <= width {
+	// The text is cut between grapheme clusters, as they are drawn: a flag
+	// takes two columns, though each of its runes alone measures two.
+	ends, widths := clusters(text)
+	upTo := func(end int) int {
+		w := 0
+		for c := range ends {
+			if ends[c] > end {
+				break
+			}
+			w += widths[c]
+		}
+		return w
+	}
+	total := upTo(len(text))
+	if total <= width {
 		return 0, len(text), false, false
 	}
-	ew := widths.StringWidth(ellipsis)
-	maxe := min(max(matchEnd+min(width/2-ew, hscrollOff), 0), len(text))
-	if runesWidth(text[:maxe]) <= width-ew {
+	ew := termwidth.String(ellipsis)
+	// clusterEnd moves a rune index to the end of the cluster it is in.
+	clusterEnd := func(i int) int {
+		for _, end := range ends {
+			if i > 0 && end >= i {
+				return end
+			}
+		}
+		return i
+	}
+	matchEnd = clusterEnd(matchEnd)
+	maxe := clusterEnd(min(max(matchEnd+min(width/2-ew, hscrollOff), 0), len(text)))
+	if upTo(maxe) <= width-ew {
 		// "Stri··": the matches fit, so cut only on the right.
 		used := 0
-		for to < len(text) && used+widths.RuneWidth(text[to]) <= width-ew {
-			used += widths.RuneWidth(text[to])
-			to++
+		for c := range ends {
+			if used+widths[c] > width-ew {
+				break
+			}
+			used += widths[c]
+			to = ends[c]
 		}
 		return 0, to, false, true
 	}
 	to = len(text)
-	if runesWidth(text[maxe:]) > ew {
+	if total-upTo(maxe) > ew {
 		to, cutRight = maxe, true
 	}
-	// "··ri··": drop runes on the left until the rest and the ellipses fit.
-	used := runesWidth(text[:to]) + ew
-	if cutRight {
-		used += ew
+	// "··ri··": drop clusters on the left until the rest and the ellipses
+	// fit.
+	trim := func(to int, cutRight bool) int {
+		used := upTo(to) + ew
+		if cutRight {
+			used += ew
+		}
+		from := 0
+		for c := 0; from < to && used > width; c++ {
+			used -= widths[c]
+			from = ends[c]
+		}
+		return from
 	}
-	for from < to && used > width {
-		used -= widths.RuneWidth(text[from])
-		from++
+	from = trim(to, cutRight)
+	// When the context after the match does not fit beside it, the context
+	// goes rather than the match.
+	if matchStart := matchEnd - lastClusterRunes(ends, matchEnd); from > matchStart && to > matchEnd {
+		to, cutRight = matchEnd, true
+		from = trim(to, cutRight)
 	}
 	return from, to, true, cutRight
 }
 
+// lastClusterRunes returns how many runes the cluster ending at end has.
+func lastClusterRunes(ends []int, end int) int {
+	prev := 0
+	for _, e := range ends {
+		if e == end {
+			return end - prev
+		}
+		prev = e
+	}
+	return 0
+}
+
+// clusters returns the rune index where each grapheme cluster of text ends,
+// and the columns it takes.
+func clusters(text []rune) (ends, widths []int) {
+	s := string(text)
+	end, state := 0, -1
+	for s != "" {
+		var cluster string
+		var w int
+		cluster, s, w, state = uniseg.FirstGraphemeClusterInString(s, state)
+		end += utf8.RuneCountInString(cluster)
+		ends = append(ends, end)
+		widths = append(widths, w)
+	}
+	return ends, widths
+}
+
 func runesWidth(rs []rune) int {
-	return widths.StringWidth(string(rs))
+	return termwidth.String(string(rs))
 }
 
 // columnColors colors the PID, PPID, and USER columns, the first three
@@ -511,15 +607,15 @@ func columnColors(text []rune) []int {
 
 // cut truncates s to width columns, ending it with an ellipsis if cut.
 func cut(s string, width int) string {
-	if widths.StringWidth(s) <= width {
+	if termwidth.String(s) <= width {
 		return s
 	}
-	return widths.Truncate(s, max(width, 0), ellipsis)
+	return termwidth.Truncate(s, max(width, 0), ellipsis)
 }
 
 // padTo pads a styled line with spaces to width visible columns.
 func padTo(line string, width int) string {
-	visible := widths.StringWidth(stripSGR(line))
+	visible := termwidth.String(stripSGR(line))
 	return line + strings.Repeat(" ", max(width-visible, 0))
 }
 
@@ -543,4 +639,46 @@ func stripSGR(s string) string {
 // than show a character. internal/proc cleans ps lines with the same rule.
 func unsafeOnScreen(r rune) bool {
 	return unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) || r == '\u2028' || r == '\u2029'
+}
+
+// columns returns the columns s takes on the terminal.
+func columns(s string) int { return termwidth.String(s) }
+
+// repeatTo repeats s to fill at most width columns, as s may take two
+// columns on a terminal that draws ambiguous-width characters wide.
+func repeatTo(s string, width int) string {
+	return strings.Repeat(s, max(width, 0)/columns(s))
+}
+
+// clip cuts line, which carries SGR sequences, to width columns, keeping
+// the sequences and resetting the style where it cuts.
+func clip(line string, width int) string {
+	if termwidth.String(stripSGR(line)) <= width {
+		return line
+	}
+	var b strings.Builder
+	used := 0
+	state := -1
+	for line != "" {
+		if strings.HasPrefix(line, "\x1b[") {
+			end := strings.IndexByte(line, 'm')
+			if end < 0 {
+				break
+			}
+			b.WriteString(line[:end+1])
+			line = line[end+1:]
+			// The text after a sequence starts afresh.
+			state = -1
+			continue
+		}
+		var cluster string
+		var w int
+		cluster, line, w, state = uniseg.FirstGraphemeClusterInString(line, state)
+		if used+w > width {
+			break
+		}
+		b.WriteString(cluster)
+		used += w
+	}
+	return b.String() + reset
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/oooooooo/kil/internal/picker"
 	"github.com/oooooooo/kil/internal/proc"
 	"github.com/oooooooo/kil/internal/ui"
+	"github.com/oooooooo/kil/internal/width"
 )
 
 func runKil(t *testing.T, env map[string]string, args ...string) (int, string, string) {
@@ -375,5 +376,19 @@ func TestVersionAfterDashDashIsAQuery(t *testing.T) {
 	opts, err := parseArgs([]string{"--", "--version"})
 	if err != nil || opts.version || opts.query != "--version" {
 		t.Errorf("parseArgs(-- --version) = %+v, %v; want the query --version", opts, err)
+	}
+}
+
+// RUNEWIDTH_EASTASIAN=1 makes kil lay rows out with ambiguous-width
+// characters two columns wide, before it lists anything.
+func TestRunReadsAmbiguousWidthFirst(t *testing.T) {
+	t.Cleanup(func() { width.SetAmbiguousWide(false) })
+	env := map[string]string{"RUNEWIDTH_EASTASIAN": "1", "KIL_SIGNAL": "bogus"}
+	var stdout, stderr bytes.Buffer
+	if code := run(nil, func(k string) string { return env[k] }, &stdout, &stderr); code != exitError {
+		t.Fatalf("run with an invalid KIL_SIGNAL = %d, want %d", code, exitError)
+	}
+	if width.Ambiguous() != 2 {
+		t.Errorf("Ambiguous() = %d after run with RUNEWIDTH_EASTASIAN=1, want 2", width.Ambiguous())
 	}
 }

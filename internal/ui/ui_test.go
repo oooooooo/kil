@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/oooooooo/kil/internal/picker"
+	"github.com/oooooooo/kil/internal/width"
 )
 
 // items returns an item for each line, with the first four
@@ -359,7 +360,7 @@ func TestLongLineShiftsToShowTheMatch(t *testing.T) {
 	if !strings.Contains(row, "needle") {
 		t.Errorf("row does not show the match:\n%q", row)
 	}
-	if w := ansi.StringWidth(row); w > 80 {
+	if w := width.String(row); w > 80 {
 		t.Errorf("row is %d columns wide, want at most 80: %q", w, row)
 	}
 }
@@ -591,7 +592,7 @@ func TestNarrowScreenCutsOnTheRight(t *testing.T) {
 	next, _ := New(items(long), "'needle", "SIGKILL", noReload).Update(WindowSizeMsg{Width: 30, Height: 10})
 	m := next
 	row := viewLines(m)[len(viewLines(m))-4]
-	if !strings.HasPrefix(row, "▌   101     1 alice") || ansi.StringWidth(row) > 30 {
+	if !strings.HasPrefix(row, "▌   101     1 alice") || width.String(row) > 30 {
 		t.Errorf("narrow row = %q, want the leading columns cut to 30 columns", row)
 	}
 }
@@ -682,7 +683,7 @@ func TestLongQueryKeepsTheCaretVisible(t *testing.T) {
 	query := strings.Repeat("a", 60) + "END"
 	m := drawn(New(items("101 node a"), query, "SIGKILL", noReload), 20, 8)
 	prompt := promptLine(m)
-	if w := ansi.StringWidth(prompt); w > 20 {
+	if w := width.String(plain(prompt)); w > 20 {
 		t.Errorf("prompt is %d columns wide, want at most 20: %q", w, plain(prompt))
 	}
 	if !strings.Contains(plain(prompt), "END") || !strings.Contains(prompt, "\x1b[7m ") {
@@ -690,7 +691,7 @@ func TestLongQueryKeepsTheCaretVisible(t *testing.T) {
 	}
 	m, _ = press(m, ctrl('a'))
 	prompt = promptLine(m)
-	if !strings.HasPrefix(plain(prompt), "> aaa") || !strings.Contains(prompt, "\x1b[7ma") || ansi.StringWidth(prompt) > 20 {
+	if !strings.HasPrefix(plain(prompt), "> aaa") || !strings.Contains(prompt, "\x1b[7ma") || width.String(plain(prompt)) > 20 {
 		t.Errorf("after Ctrl-A, prompt does not show the start with the caret: %q", prompt)
 	}
 }
@@ -1092,10 +1093,10 @@ func TestZeroTerminalSizeKeepsTheDefaultSize(t *testing.T) {
 // narrow the terminal is.
 func TestNarrowTerminalKeepsTheAnswersOfTheQuestion(t *testing.T) {
 	m, _ := press(partlySent(t), key(KeyEsc))
-	for _, width := range []int{80, 30, 12, 6} {
-		m = resized(m, width, 10)
-		if prompt := plain(promptLine(m)); !strings.Contains(prompt, "[Y/n]") || ansi.StringWidth(prompt) > width {
-			t.Errorf("width %d: question %q has no [Y/n] or does not fit", width, prompt)
+	for _, w := range []int{80, 30, 12, 6} {
+		m = resized(m, w, 10)
+		if prompt := plain(promptLine(m)); !strings.Contains(prompt, "[Y/n]") || width.String(prompt) > w {
+			t.Errorf("width %d: question %q has no [Y/n] or does not fit", w, prompt)
 		}
 	}
 }
@@ -1427,7 +1428,7 @@ func enterIgnored(t *testing.T, m Model) bool {
 	if i < 0 {
 		return false
 	}
-	if end := ansi.StringWidth(line[:i]) + len("Enter ignored"); end > m.width {
+	if end := width.String(line[:i]) + len("Enter ignored"); end > m.width {
 		t.Errorf("info line %q says Enter was ignored past column %d", line, m.width)
 	}
 	return true

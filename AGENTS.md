@@ -181,3 +181,16 @@ Using fzf is fine, and so is writing it from scratch in Go.
   signalling compares keeps the characters shown as `?`: built from the
   cleaned line, it took a command line changed from one bidirectional control
   to another for the same process.
+- Characters of ambiguous East Asian width, such as `·`, `─`, `│`, `▌`, and
+  `┃`, count as one column unless `RUNEWIDTH_EASTASIAN=1`, as fzf and
+  go-runewidth read it, says the terminal draws them as two. Counted as one on
+  such a terminal, every row ran past the right edge. kil does not guess from
+  the locale, as many terminals in East Asian locales draw them as one.
+  internal/width measures with uniseg, as tcell draws, and keeps uniseg's
+  setting, as go-runewidth counted some characters, such as `®`, apart from
+  tcell and rows went out of place; internal/ui resets it as it starts, after
+  tcell, which reads the variable more loosely. Decorations are sized by their
+  real width, the marker of a row not selected as wide as `┃`, a caret too
+  wide for the prompt is drawn as a space, and every line is cut to the
+  terminal's width last, as on a very narrow terminal indents and ellipses
+  alone ran past the edge.

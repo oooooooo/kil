@@ -19,6 +19,7 @@ import (
 	"github.com/oooooooo/kil/internal/proc"
 	"github.com/oooooooo/kil/internal/signal"
 	"github.com/oooooooo/kil/internal/ui"
+	"github.com/oooooooo/kil/internal/width"
 )
 
 const usage = `Usage: kil [--] [query...]
@@ -135,6 +136,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		reportf(stderr, "kil: %v\n", err)
 		return exitError
 	}
+	// Rows are laid out with this width from the listing on, so it is set
+	// first.
+	width.SetAmbiguousWide(width.FromEnv(getenv))
 	sig, err := signal.Parse(getenv("KIL_SIGNAL"))
 	if err != nil {
 		reportf(stderr, "kil: invalid KIL_SIGNAL: %v (use a number like 15 or a name like TERM)\n", err)

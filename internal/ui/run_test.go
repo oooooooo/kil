@@ -2,13 +2,17 @@ package ui
 
 import (
 	"errors"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
-	"github.com/rivo/uniseg"
+
+	"github.com/oooooooo/kil/internal/picker"
+	"github.com/oooooooo/kil/internal/width"
 )
 
 func simScreen(t *testing.T) tcell.SimulationScreen {
@@ -177,18 +181,21 @@ func TestRunEndsWhenResumeFails(t *testing.T) {
 	}
 }
 
-// kil lays rows out with ambiguous-width characters, such as ·, one column
-// wide, so they are drawn one column wide even where tcell would draw them
-// two wide, as with RUNEWIDTH_EASTASIAN=1.
-func TestAmbiguousWidthIsDrawnAsLaidOut(t *testing.T) {
-	defer func(w int) { uniseg.EastAsianAmbiguousWidth = w }(uniseg.EastAsianAmbiguousWidth)
-	uniseg.EastAsianAmbiguousWidth = 2
-	s := simScreen(t)
-	m := New(items("101 a"), "x·y", "SIGKILL", noReload)
-	m, _ = press(m, WindowSizeMsg{Width: 80, Height: 24})
-	draw(s, m)
-	if got, _, _ := s.Get(4, 23); got != "y" {
-		t.Errorf("prompt \"> x·y\" has %q in column 4, want \"y\"", got)
+// tcell makes ambiguous-width characters wide as it starts when
+// RUNEWIDTH_EASTASIAN is "yes", which kil does not take to mean that, so
+// they are narrow until kil says otherwise. This test runs itself with
+// that setting in a child, which starts afresh.
+func TestAmbiguousWidthIsNarrowDespiteTcell(t *testing.T) {
+	if os.Getenv("KIL_TEST_WIDTH_CHILD") != "" {
+		if width.Ambiguous() != 1 {
+			t.Fatalf("Ambiguous() = %d with RUNEWIDTH_EASTASIAN=yes, want 1", width.Ambiguous())
+		}
+		return
+	}
+	child := exec.Command(os.Args[0], "-test.run=^TestAmbiguousWidthIsNarrowDespiteTcell$")
+	child.Env = append(os.Environ(), "KIL_TEST_WIDTH_CHILD=1", "RUNEWIDTH_EASTASIAN=yes")
+	if out, err := child.CombinedOutput(); err != nil {
+		t.Errorf("child failed: %v\n%s", err, out)
 	}
 }
 
@@ -316,5 +323,153 @@ func TestBidiControlsInARowAreDrawnAsQuestionMarks(t *testing.T) {
 	}
 	if got := row.String(); !strings.Contains(got, "101 a ?txt.exe") {
 		t.Errorf("row drawn as %q, want the override shown as \"?\"", got)
+	}
+}
+
+// With ambiguous-width characters drawn wide, each line still fits the
+// terminal, and the drawing puts each character where the layout counted
+// it.
+func TestAmbiguousWideRowsFitAndAreDrawnWide(t *testing.T) {
+	width.SetAmbiguousWide(true)
+	t.Cleanup(func() { width.SetAmbiguousWide(false) })
+	m := sized(New(items(numberedLines(40)...), "x·y", "SIGKILL", noReload))
+	m, _ = press(m, ctrl('u'))
+	for _, keys := range [][]Msg{nil, {key(KeyTab, ModShift)}, {alt('a')}} {
+		m, _ = press(m, keys...)
+		for i, line := range viewLines(m) {
+			if w := width.String(line); w > 80 {
+				t.Errorf("line %d is %d columns wide, over 80: %q", i, w, line)
+			}
+		}
+	}
+	m, _ = press(m, typed("x"), typed("·"), typed("y"))
+	s := simScreen(t)
+	m, _ = press(m, WindowSizeMsg{Width: 80, Height: 24})
+	draw(s, m)
+	if got, _, _ := s.Get(5, 23); got != "y" {
+		t.Errorf("prompt \"> x·y\" has %q in column 5, want \"y\" after a two-column ·", got)
+	}
+}
+
+// wideMode makes ambiguous-width characters two columns wide for a test.
+func wideMode(t *testing.T) {
+	t.Helper()
+	width.SetAmbiguousWide(true)
+	t.Cleanup(func() { width.SetAmbiguousWide(false) })
+}
+
+// No line, however narrow the terminal, runs past its edge, in either
+// width mode, including ellipses, the prompt and its caret, and the info
+// line after a partial Enter.
+func TestEveryLineFitsANarrowTerminal(t *testing.T) {
+	for _, wide := range []bool{false, true} {
+		width.SetAmbiguousWide(wide)
+		t.Cleanup(func() { width.SetAmbiguousWide(false) })
+		long := "  101     1 alice    node            " + strings.Repeat("x", 100) + " needle"
+		for w := 1; w <= 50; w++ {
+			var r recorder
+			m := offscreenSelections(&r)
+			m, _ = press(settled(m), key(KeyEnter), key(KeyEnter))
+			m = resized(m, w, 10)
+			views := []Model{m}
+			n := sized(New(items(long, "  102     1 bob      sh              sh"), "x\u00b7yneedle", "SIGKILL", noReload))
+			n = resized(n, w, 6)
+			n, _ = press(n, ctrl('a'), key(KeyRight))
+			views = append(views, n)
+			h, _ := press(n, alt('h'))
+			views = append(views, h)
+			for _, v := range views {
+				for i, line := range viewLines(v) {
+					if got := width.String(line); got > w {
+						t.Errorf("wide %v, width %d: line %d is %d columns: %q", wide, w, i, got, line)
+					}
+				}
+			}
+		}
+	}
+}
+
+// A caret too wide for the prompt is drawn as a one-column space rather
+// than not at all.
+func TestTooWideACaretIsStillDrawn(t *testing.T) {
+	wideMode(t)
+	m := New(items("101 a"), "x\u00b7y", "SIGKILL", noReload)
+	m, _ = press(m, WindowSizeMsg{Width: 3, Height: 5}, ctrl('a'), key(KeyRight))
+	s := simScreen(t)
+	s.SetSize(3, 5)
+	draw(s, m)
+	if _, st, _ := s.Get(2, 4); func() bool { _, _, attr := st.Decompose(); return attr&tcell.AttrReverse == 0 }() {
+		t.Errorf("no caret drawn in the prompt %q on 3 columns", plain(promptLine(m)))
+	}
+}
+
+// The marker of a row not selected is as wide as a selected row's, so
+// that their text starts in the same column.
+func TestSelectedAndUnselectedRowsLineUp(t *testing.T) {
+	wideMode(t)
+	m := sized(New(items("101 a", "202 b"), "", "SIGKILL", noReload))
+	m, _ = press(m, key(KeyTab))
+	lines := viewLines(m)
+	col := func(text string) int {
+		for _, line := range lines {
+			if i := strings.Index(line, text); i >= 0 {
+				return width.String(line[:i])
+			}
+		}
+		t.Fatalf("%q is not on screen:\n%s", text, strings.Join(lines, "\n"))
+		return 0
+	}
+	if a, b := col("101 a"), col("202 b"); a != b {
+		t.Errorf("text starts at columns %d and %d, want the same:\n%s", a, b, strings.Join(lines, "\n"))
+	}
+}
+
+// A long line is shifted by grapheme clusters, as uniseg measures them:
+// a flag takes two columns, though each of its two runes alone measures
+// two as well, so shifting by runes stopped short and the match was cut.
+func TestLongLineOfFlagsStillShowsTheMatch(t *testing.T) {
+	text := "1 0 u c " + strings.Repeat("\U0001F1EF\U0001F1F5", 80) + " needle"
+	for _, w := range []int{20, 40, 80} {
+		it := picker.Item{ID: "a", Text: text, Frozen: len([]rune("1 0 u c "))}
+		m := New([]picker.Item{it}, "'needle", "SIGKILL", noReload)
+		m, _ = press(m, WindowSizeMsg{Width: w, Height: 6})
+		lines := viewLines(m)
+		if row := lines[len(lines)-4]; !strings.Contains(row, "needle") {
+			t.Errorf("width %d: the match is not shown in the row %q", w, row)
+		}
+	}
+}
+
+// When the context after a match does not fit beside it, the match stays
+// on screen and the context goes, rather than the match being trimmed off
+// on the left.
+func TestMatchStaysWhenItsContextDoesNotFit(t *testing.T) {
+	wideMode(t)
+	text := "1 0 u c " + strings.Repeat("x", 80) + "\U0001F1EF\U0001F1F5" + strings.Repeat("y", 80)
+	it := picker.Item{ID: "a", Text: text, Frozen: 8}
+	m := New([]picker.Item{it}, "'\U0001F1EF\U0001F1F5", "SIGKILL", noReload)
+	m, _ = press(m, WindowSizeMsg{Width: 24, Height: 6})
+	if row := viewLines(m)[2]; !strings.Contains(row, "\U0001F1EF\U0001F1F5") {
+		t.Errorf("row %q does not show the matched flag", row)
+	}
+}
+
+// A match covering part of a grapheme cluster colors the whole cluster, so
+// that no color change splits it and tcell draws it whole.
+func TestPartlyMatchedClusterIsDrawnWhole(t *testing.T) {
+	text := "1 0 u c \U0001F1EF\U0001F1F5 END"
+	it := picker.Item{ID: "a", Text: text, Frozen: 8}
+	m := New([]picker.Item{it}, "'\U0001F1EF", "SIGKILL", noReload)
+	m, _ = press(m, WindowSizeMsg{Width: 17, Height: 6})
+	s := simScreen(t)
+	s.SetSize(17, 6)
+	draw(s, m)
+	var row strings.Builder
+	for x := range 17 {
+		str, _, _ := s.Get(x, 2)
+		row.WriteString(str)
+	}
+	if got := row.String(); !strings.Contains(got, "\U0001F1EF\U0001F1F5") || !strings.Contains(got, "END") {
+		t.Errorf("row drawn as %q, want the flag whole and END", got)
 	}
 }

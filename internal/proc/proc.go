@@ -15,7 +15,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/mattn/go-runewidth"
+	termwidth "github.com/oooooooo/kil/internal/width"
 )
 
 // listColumns is the column list for the listing ps run. The command name
@@ -63,9 +63,6 @@ type Process struct {
 	// line is scrolled.
 	Frozen int
 }
-
-// widths measures text as kil's screen does.
-var widths = &runewidth.Condition{EastAsianWidth: false}
 
 // Parse joins the output of the listing ps run, with listColumns, and of
 // the name ps run, with nameColumns, by PID, and lays the columns out. A
@@ -152,12 +149,12 @@ func layOut(procs []Process) {
 	for _, p := range procs {
 		pidW = max(pidW, len(strconv.Itoa(p.PID)))
 		ppidW = max(ppidW, len(strconv.Itoa(p.PPID)))
-		userW = max(userW, widths.StringWidth(p.User))
-		commW = max(commW, min(widths.StringWidth(p.Comm), commWidth))
+		userW = max(userW, termwidth.String(p.User))
+		commW = max(commW, min(termwidth.String(p.Comm), commWidth))
 	}
 	for i := range procs {
 		p := &procs[i]
-		comm := widths.Truncate(p.Comm, commWidth, "")
+		comm := termwidth.Truncate(p.Comm, commWidth, "")
 		frozen := fmt.Sprintf("%*d %*d %s %s ", pidW, p.PID, ppidW, p.PPID, pad(p.User, userW), pad(comm, commW))
 		p.Frozen = utf8.RuneCountInString(frozen)
 		p.Raw = frozen + p.Args
@@ -166,7 +163,7 @@ func layOut(procs []Process) {
 
 // pad pads s with spaces to width columns.
 func pad(s string, width int) string {
-	return s + strings.Repeat(" ", max(width-widths.StringWidth(s), 0))
+	return s + strings.Repeat(" ", max(width-termwidth.String(s), 0))
 }
 
 // printable replaces control characters and invalid UTF-8 in a ps line with

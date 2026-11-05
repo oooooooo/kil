@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/oooooooo/kil/internal/width"
 )
 
 func pids(ps []Process) []int {
@@ -489,5 +491,21 @@ func TestListIgnoresTheScreenSize(t *testing.T) {
 	t.Setenv("COLUMNS", "1")
 	if _, err := List(0); err != nil {
 		t.Errorf("List() with a 1x1 screen: %v", err)
+	}
+}
+
+// With ambiguous-width characters drawn wide, the columns still line up
+// on screen.
+func TestParseLinesUpAmbiguousWideNames(t *testing.T) {
+	width.SetAmbiguousWide(true)
+	t.Cleanup(func() { width.SetAmbiguousWide(false) })
+	got, err := Parse("  1 0 \u00b7\u00b7 /a\n  2 0 abc /b\n", "  1 0 x\n  2 0 y\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := width.String(string([]rune(got[0].Raw)[:got[0].Frozen]))
+	b := width.String(string([]rune(got[1].Raw)[:got[1].Frozen]))
+	if a != b {
+		t.Errorf("frozen columns are %d and %d columns wide, want them equal: %q, %q", a, b, got[0].Raw, got[1].Raw)
 	}
 }

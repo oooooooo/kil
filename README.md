@@ -98,6 +98,7 @@ process.
 | --- | --- | --- |
 | `KIL_SIGNAL` | `9` (SIGKILL) | Signal number or name to send, e.g. `KIL_SIGNAL=15 kil` or `KIL_SIGNAL=TERM kil`. Invalid values, and numbers without a name such as Linux real-time signals, are rejected. |
 | `KIL_EXACT` | unset (fuzzy) | Set to `1` to start in exact mode, as with `-e`. |
+| `RUNEWIDTH_EASTASIAN` | unset | Set to `1` if your terminal draws characters of ambiguous width, such as `·` and `─`, two columns wide, as fzf reads it. |
 
 ## Notes
 

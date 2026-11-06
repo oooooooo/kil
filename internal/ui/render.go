@@ -73,9 +73,34 @@ func (m Model) headerLines() int {
 }
 
 // bodyHeight is the number of lines for rows. It is 0 when the terminal has
-// room for the prompt only.
+// room for the prompt only, or is too narrow for a row's PID.
 func (m Model) bodyHeight() int {
+	if !m.pidsFit() {
+		return 0
+	}
 	return max(m.height-m.headerLines(), 0)
+}
+
+// pidsFit reports whether every row's PID fits on screen, with the
+// ellipsis a row cut on the right ends with, the least that tells which
+// process a row is. On a narrower terminal no row is shown, as Enter would
+// otherwise signal a row the user could not tell from another.
+func (m Model) pidsFit() bool {
+	room := m.width - columns("▌") - columns("┃") - columns("│") - columns(ellipsis)
+	for _, r := range m.picker.Rows() {
+		text := r.Item.Text
+		rest := strings.TrimLeft(text, " ")
+		end := len(text) - len(rest)
+		if i := strings.IndexByte(rest, ' '); i >= 0 {
+			end += i
+		} else {
+			end = len(text)
+		}
+		if columns(text[:end]) > room {
+			return false
+		}
+	}
+	return true
 }
 
 func (m Model) pinnedCount() int {
@@ -222,11 +247,14 @@ func (m Model) helpLines(height int) []string {
 		{"Alt-A", "select all shown, or deselect them"},
 		{"Enter", "send " + m.label + " to the selected lines, or the current line"},
 		{"Up / Down", "move (also Ctrl-P / Ctrl-N)"},
-		{"Ctrl-X", "toggle exact match"},
-		{"Ctrl-R", "refresh the process list"},
+		{"Ctrl-X / Ctrl-R", "toggle exact match / refresh the process list"},
 		{"Esc / Ctrl-C", "abort without sending anything"},
 		{"Ctrl-Z", "suspend kil as a shell job (fg resumes it)"},
 		{"any key", "close this help (Ctrl-C aborts)"},
+		// The query is edited with readline's keys. Two lines hold them,
+		// so that the whole help still fits a 24-line terminal.
+		{"move in query", "Ctrl-A/E or Home/End, Ctrl-B/F or Left/Right, Alt-B/F"},
+		{"delete in query", "Ctrl-H/Backspace, Delete, Ctrl-W, Ctrl-U/K to start/end"},
 		// The query syntax is fzf's, which users who do not use fzf
 		// cannot guess. The blank line and the headings set it apart from
 		// the keys, which are drawn the same way.
@@ -237,8 +265,7 @@ func (m Model) helpLines(height int) []string {
 		{"'node'", "contain node as a whole word"},
 		{"^node / .js$", "start with node / end with .js"},
 		{"!node", "do not contain node"},
-		{"a b", "match a and b"},
-		{"a | b", "match a or b"},
+		{"a b / a | b", "match a and b / a or b"},
 		{"Node", "match case sensitive (has an uppercase letter)"},
 	}
 	entries = entries[:min(len(entries), height)]

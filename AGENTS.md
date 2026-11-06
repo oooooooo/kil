@@ -44,7 +44,10 @@ Using fzf is fine, and so is writing it from scratch in Go.
   not show.
 - Matching uses fzf's own algorithm (`github.com/junegunn/fzf/src/algo`), so
   queries behave as in fzf. That package is not a stable API, so the fzf
-  version is pinned in `go.mod`.
+  version is pinned in `go.mod`. kil gives it fzf's working memory, as fzf
+  does, so that a match too large for it falls back to fzf's lighter
+  algorithm: without it, a long term against a long line took tens of
+  megabytes on every keystroke.
 - The query is edited with readline's keys, so `Ctrl-A` moves to the start of
   the query and `Ctrl-K` deletes to its end, as in a shell. Select-all
   therefore moved from `Ctrl-A` to `Alt-A`, and moving up is `Up` / `Ctrl-P`
@@ -109,9 +112,12 @@ Using fzf is fine, and so is writing it from scratch in Go.
   a script did not notice its `Enter` had done nothing. The help and the
   `[Y/n]` question do not say it, as `Enter` closes or answers them. A
   terminal of two lines has no info line, as it keeps a row and the prompt, so
-  it does not say it either. The cursor row alone does not wait, so typing a
-  query and pressing `Enter` at once works as in fzf. The picker ends as soon
-  as the outcome is decided, and ignores anything handled after it, as
+  it does not say it either. Each wait starts once the frame showing its rows
+  is on the terminal: started before, a slow frame used it up. A terminal too
+  narrow for a row's PID shows no row, so that `Enter` and `Alt-A` cannot take
+  a row whose text is cut off entirely. The cursor row alone does not wait, so
+  typing a query and pressing `Enter` at once works as in fzf. The picker ends
+  as soon as the outcome is decided, and ignores anything handled after it, as
   `Ctrl-C` then `Enter` once signalled rows. `Alt-A` likewise selects only the
   rows on screen and then scrolls to keep the rows it selected there, with the
   rows on screen that were selected before it, so that `Alt-A` again deselects

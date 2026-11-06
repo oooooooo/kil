@@ -473,3 +473,66 @@ func TestPartlyMatchedClusterIsDrawnWhole(t *testing.T) {
 		t.Errorf("row drawn as %q, want the flag whole and END", got)
 	}
 }
+
+// slowScreen takes its time to show each frame, as a slow terminal or link
+// does, and tells shown when it has.
+type slowScreen struct {
+	tcell.Screen
+	shown chan struct{}
+}
+
+func (s slowScreen) Show() {
+	time.Sleep(400 * time.Millisecond)
+	s.Screen.Show()
+	select {
+	case s.shown <- struct{}{}:
+	default:
+	}
+}
+
+// The wait for rows that came on screen starts once the frame showing them
+// is on the terminal: started before, a slow frame used it up, and an
+// Enter right after the frame appeared signalled rows the user had not
+// seen yet.
+func TestEnterWaitsAfterASlowFrameIsShown(t *testing.T) {
+	sim := simScreen(t)
+	s := slowScreen{sim, make(chan struct{}, 1)}
+	m := New(items("101 a"), "", "SIGKILL", noReload)
+	m, _ = press(m, key(KeyTab))
+	done := runAsync(s, m, Control{})
+	<-s.shown // the first frame
+	time.Sleep(2 * settleTime)
+	sim.InjectKey(tcell.KeyRune, 'h', tcell.ModAlt)
+	<-s.shown // the help
+	sim.InjectKey(tcell.KeyRune, 'x', tcell.ModNone)
+	<-s.shown // the list again, after the help closed
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	sim.InjectKey(tcell.KeyCtrlC, 0, tcell.ModCtrl)
+	if got := wait(t, done); got.Outcome() != Aborted {
+		t.Errorf("Enter right after the list was shown again: Outcome() = %v, want Aborted by the Ctrl-C after it", got.Outcome())
+	}
+}
+
+// Whenever Enter or Alt-A takes a row, its whole PID is drawn, in either
+// width mode: a row cut on the right ends with an ellipsis, which a PID
+// that only just fit gave way to.
+func TestARowTakenAlwaysShowsItsPID(t *testing.T) {
+	for _, wide := range []bool{false, true} {
+		width.SetAmbiguousWide(wide)
+		t.Cleanup(func() { width.SetAmbiguousWide(false) })
+		for _, line := range []string{"  101 1 alice node node", "7 1 a b c"} {
+			pid := strings.Fields(line)[0]
+			for w := 1; w <= 20; w++ {
+				m := drawn(New(items(line), "", "SIGKILL", noReload), w, 5)
+				rows := strings.Join(viewLines(m)[:max(m.bodyHeight(), 0)], "\n")
+				shown := strings.Contains(rows, pid)
+				if e, _ := press(m, key(KeyEnter)); e.Outcome() == Accepted && !shown {
+					t.Errorf("wide %v, width %d: Enter took %q, drawn as %q", wide, w, line, rows)
+				}
+				if a, _ := press(m, alt('a')); a.picker.SelectedCount() > 0 && !shown {
+					t.Errorf("wide %v, width %d: Alt-A took %q, drawn as %q", wide, w, line, rows)
+				}
+			}
+		}
+	}
+}

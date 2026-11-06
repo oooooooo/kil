@@ -51,9 +51,12 @@ func Run(s tcell.Screen, m Model, c Control) (Model, error) {
 	s.EnablePaste()
 	w, h := s.Size()
 	m, cmd := m.Update(WindowSizeMsg{w, h})
+	// Commands, which start the waits for rows that came on screen, run
+	// once the frame showing those rows is on the terminal: started before
+	// a slow frame, a wait could end before the user saw the rows.
+	draw(s, m)
 	run(cmd)
 	run(m.Init())
-	draw(s, m)
 
 	for m.Outcome() == Running {
 		var msg Msg
@@ -81,13 +84,17 @@ func Run(s tcell.Screen, m Model, c Control) (Model, error) {
 				continue
 			}
 			w, h := s.Size()
-			m, cmd = m.Update(WindowSizeMsg{w, h})
+			var resized Cmd
+			m, resized = m.Update(WindowSizeMsg{w, h})
+			m, cmd = m.Update(ResumeMsg{})
+			draw(s, m)
+			run(resized)
 			run(cmd)
-			msg = ResumeMsg{}
+			continue
 		}
 		m, cmd = m.Update(msg)
-		run(cmd)
 		draw(s, m)
+		run(cmd)
 	}
 	return m, nil
 }

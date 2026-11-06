@@ -227,7 +227,9 @@ func (q Query) matchTerm(t term, chars *util.Chars, withPos bool) (algo.Result, 
 	default:
 		fn = algo.FuzzyMatchV2
 	}
-	res, pos := fn(t.caseSensitive, t.normalize, true, chars, t.text, withPos, nil)
+	slabMu.Lock()
+	defer slabMu.Unlock()
+	res, pos := fn(t.caseSensitive, t.normalize, true, chars, t.text, withPos, slab)
 	if !withPos || res.Start < 0 || t.negated {
 		return res, nil
 	}
@@ -242,3 +244,12 @@ func (q Query) matchTerm(t term, chars *util.Chars, withPos bool) (algo.Result, 
 	}
 	return res, out
 }
+
+// slab is the working memory fzf's algorithms use, of fzf's own size. Given
+// none, the fuzzy algorithm allocated a matrix of term by line, 53 MB for a
+// term of 200 characters against a line of 64 KiB; with it, a match too
+// large for it falls back to fzf's lighter algorithm, as in fzf.
+var (
+	slab   = util.MakeSlab(100*1024, 2048)
+	slabMu sync.Mutex
+)

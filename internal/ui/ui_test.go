@@ -1499,3 +1499,39 @@ func TestEnterIgnoredIsNotShownWhereEnterDoesSomethingElse(t *testing.T) {
 		t.Errorf("in the question (confirming %v), info line %q says Enter is ignored", question.confirming, infoText(question))
 	}
 }
+
+// The help shows every key, as README and AGENTS.md say, the keys that edit
+// the query too.
+func TestHelpShowsTheEditingKeys(t *testing.T) {
+	m, _ := press(drawn(New(items("101 a"), "", "SIGKILL", noReload), 80, 24), alt('h'))
+	view := plain(m.render())
+	for _, k := range []string{"Ctrl-A/E", "Home/End", "Ctrl-B/F", "Left/Right", "Alt-B/F", "Ctrl-H", "Backspace", "Delete", "Ctrl-W", "Ctrl-U/K"} {
+		if !strings.Contains(view, k) {
+			t.Errorf("the help does not mention %s:\n%s", k, view)
+		}
+	}
+}
+
+// On a terminal too narrow to show a row's PID, no row counts as shown:
+// Enter signals nothing and Alt-A selects nothing, as the user cannot tell
+// which process a row is.
+func TestTooNarrowForAPIDShowsNoRow(t *testing.T) {
+	for _, w := range []int{1, 2, 4, 5, 9} {
+		m := drawn(New(items("  101     1 alice    node            node a"), "", "SIGKILL", noReload), w, 5)
+		if a, _ := press(m, alt('a')); a.picker.SelectedCount() != 0 {
+			t.Errorf("width %d: Alt-A selected %d rows", w, a.picker.SelectedCount())
+		}
+		if e, _ := press(m, key(KeyEnter)); e.Outcome() != Running {
+			t.Errorf("width %d: Enter ended with %v, want Running", w, e.Outcome())
+		}
+	}
+	// The PID's five columns, the gutter, marker, and scrollbar, and the
+	// ellipsis of a row cut on the right make ten.
+	m := drawn(New(items("  101     1 alice    node            node a"), "", "SIGKILL", noReload), 10, 5)
+	if !strings.Contains(plain(m.render()), "101") {
+		t.Errorf("width 10: the PID is not drawn:\n%s", plain(m.render()))
+	}
+	if m, _ = press(m, key(KeyEnter)); m.Outcome() != Accepted {
+		t.Errorf("width 10, with room for the PID: Enter ended with %v, want Accepted", m.Outcome())
+	}
+}

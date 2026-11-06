@@ -1,7 +1,9 @@
 package query
 
 import (
+	"runtime"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -142,5 +144,25 @@ func TestExactMode(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("ParseExact(%q).Match(%q) = %v, want %v", tt.query, tt.text, got, tt.want)
 		}
+	}
+}
+
+// A long fuzzy term against a long line stays within fzf's working memory
+// and falls back to fzf's lighter algorithm, as fzf does, rather than
+// allocating a matrix of term by line: 53 MB for 200 characters against a
+// 64 KiB line, done again for filtering and for highlighting.
+func TestLongFuzzyMatchesStayWithinFzfsMemory(t *testing.T) {
+	q := Parse(strings.Repeat("a", 200))
+	line := strings.Repeat("a", 64*1024)
+	q.Positions(line) // the working memory is allocated once
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	if _, ok := q.Match(line); !ok {
+		t.Fatal("the line does not match")
+	}
+	q.Positions(line)
+	runtime.ReadMemStats(&after)
+	if used := after.TotalAlloc - before.TotalAlloc; used > 4<<20 {
+		t.Errorf("matching allocated %d MB, want under 4", used>>20)
 	}
 }

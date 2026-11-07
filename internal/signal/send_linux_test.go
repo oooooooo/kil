@@ -149,6 +149,7 @@ func TestSendFailsWhenOutOfFileDescriptors(t *testing.T) {
 // probing pidfd, is not a system without pidfd either.
 func TestSendDoesNotFallBackOnResourceErrorsAnywhere(t *testing.T) {
 	t.Run("signal", func(t *testing.T) {
+		requirePidfd(t)
 		cmd := startSleep(t)
 		failPidfdSignal(t, unix.ENOMEM, func(unix.Signal) bool { return true })
 		got, err := Send(cmd.Process.Pid, syscall.SIGTERM, "the line", fixed("the line", true), nil)
@@ -178,6 +179,7 @@ func TestSendDoesNotFallBackOnResourceErrorsAnywhere(t *testing.T) {
 // not show that pidfd is unavailable, so a target's own failure is
 // reported rather than its PID signalled.
 func TestSendDoesNotFallBackWhenTheProbeSignalLacksResources(t *testing.T) {
+	requirePidfd(t)
 	cmd := startSleep(t)
 	failPidfdSignal(t, unix.EPERM, func(sig unix.Signal) bool { return sig != 0 })
 	failPidfdSignal(t, unix.ENOMEM, func(sig unix.Signal) bool { return sig == 0 })

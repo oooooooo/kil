@@ -15,6 +15,17 @@ screen at once.
 
 Using fzf is fine, and so is writing it from scratch in Go.
 
+## Fixing issues
+
+- Once an issue is fixed, and before it is committed, a new agent that knows
+  only the issue and the change, not the reasoning behind the fix, researches
+  how comparable tools handle the same problem and reviews the change against
+  them. What it finds is fixed, test first, and the fixed change goes to
+  another new agent in the same way, until a review finds nothing that needs
+  fixing; only then is it committed. A review anchored on the fixer's
+  reasoning tends to confirm it, other tools show cases the fix missed, and
+  fixes made after a review can break what it had checked.
+
 ## Decisions
 
 - Killing everything shown is done with `Alt-A` (select all shown; pressed
@@ -48,6 +59,22 @@ Using fzf is fine, and so is writing it from scratch in Go.
   does, so that a match too large for it falls back to fzf's lighter
   algorithm: without it, a long term against a long line took tens of
   megabytes on every keystroke.
+- The caret in the query moves and deletes by grapheme cluster, so it never
+  stops between a letter and its combining mark, or inside a flag or an emoji
+  joined with ZWJ. Moving by code point, text typed there split the character,
+  `Backspace` left half of it, and the caret was a blank cell. Text typed or
+  deleted can join the clusters around it, as a space deleted between two
+  regional indicators, so the caret then goes to the end of the joined cluster,
+  as zsh does for combining marks. A cluster of no width, as a zero-width space,
+  is not drawn, as in tview and ratatui, since rows and the prompt are laid out
+  without a cell for it: given one, each pushed the line right, and the caret
+  past the edge, and sent to the terminal with the cell after it, one the
+  terminal measures otherwise, as glibc gives a soft hyphen a column, moved the
+  terminal's cursor apart from tcell's. A caret on such a cluster is drawn as a
+  space, so that it shows. A word key finds the clusters once, not at each step,
+  which took seconds on a pasted query. tview, rustyline, and reedline also edit
+  by grapheme cluster; fzf and bubbles edit by code point, readline skips
+  zero-width characters, and fish skips them only on `Backspace`.
 - The query is edited with readline's keys, so `Ctrl-A` moves to the start of
   the query and `Ctrl-K` deletes to its end, as in a shell. Select-all
   therefore moved from `Ctrl-A` to `Alt-A`, and moving up is `Up` / `Ctrl-P`

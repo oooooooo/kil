@@ -90,10 +90,20 @@ func TestLsofHolders(t *testing.T) {
 		t.Errorf("lsofHolders(TCP port only) = %v, %v; want this process", got, err)
 	}
 
-	freePort := freeTCPAndUDPPort(t)
-	got, err = lsofHolders([]int{freePort})
+}
+
+// lsof ending with 1 and printing nothing, as when no socket matches, is no
+// holder and no error. lsof is replaced, as a port that no socket has on
+// any address cannot be kept so while lsof runs.
+func TestLsofFindsNothing(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/lsof", []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	got, err := lsofHolders([]int{3000})
 	if err != nil || len(got) != 0 {
-		t.Errorf("lsofHolders(free port) = %v, %v; want nothing", got, err)
+		t.Errorf("lsofHolders(nothing found) = %v, %v; want nothing", got, err)
 	}
 }
 

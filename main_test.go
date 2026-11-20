@@ -691,6 +691,11 @@ func TestPortsChild(t *testing.T) {
 		findPorts = func([]int) (port.Result, error) {
 			return port.Result{PIDs: map[int]bool{os.Getppid(): true}, Hidden: map[int][]int{5173: {0}}}, nil
 		}
+	case "missing":
+		// A PID that no process has, as one that exited after the lookup.
+		findPorts = func([]int) (port.Result, error) {
+			return port.Result{PIDs: map[int]bool{1<<22 + 7: true}}, nil
+		}
 	case "late":
 		// The holder is started through a shell that exits at once, so
 		// that it is not one of kil's descendants, which kil hides.
@@ -742,6 +747,17 @@ func TestHiddenHolderIsReportedBesideVisibleOnes(t *testing.T) {
 	want := "kil: port 5173 is held by a process kil cannot see, with a socket of user root; try sudo kil :5173\n"
 	if !strings.HasPrefix(out, want) || !strings.Contains(out, "no terminal") {
 		t.Errorf("kil :3000 :5173 reported %q; want it to start with %q and go on to the picker", out, want)
+	}
+}
+
+// A holder that is still missing from the list after kil read it again is
+// not reported as no process: the port had one, which exited or started as
+// kil read the list.
+func TestPortHolderMissingFromTheList(t *testing.T) {
+	out := runPortsChild(t, "missing")
+	want := "kil: a process found on ports 3000, 5173 was not in the process list, as it started or exited meanwhile; try again\ncode=1\n"
+	if out != want {
+		t.Errorf("kil :3000 :5173 reported %q; want %q", out, want)
 	}
 }
 

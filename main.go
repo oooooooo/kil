@@ -266,6 +266,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	}
 
 	var found port.Result
+	// unlisted says that a holder found on the ports was still missing from
+	// the process list after it was read again.
+	unlisted := false
 	list := func() ([]picker.Item, error) {
 		procs, err := proc.List(os.Getpid())
 		if err != nil {
@@ -286,6 +289,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 					return nil, err
 				}
 			}
+			unlisted = missesAny(procs, found.PIDs)
 			procs = slices.DeleteFunc(procs, func(p proc.Process) bool { return !found.PIDs[p.PID] })
 		}
 		items := make([]picker.Item, len(procs))
@@ -303,6 +307,10 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		hiddenOnPorts(opts.ports, found, stderr)
 		if len(items) == 0 {
 			// There is nothing to pick from, so the terminal is left alone.
+			if unlisted {
+				reportf(stderr, "kil: a process found on %s was not in the process list, as it started or exited meanwhile; try again\n", portNames(opts.ports))
+				return exitProblems
+			}
 			nothingOnPorts(opts.ports, found, stderr)
 			return exitProblems
 		}
@@ -928,10 +936,7 @@ func nothingOnPorts(ports []int, found port.Result, stderr io.Writer) {
 	if len(free) == 0 {
 		return
 	}
-	which := "port " + free[0]
-	if len(free) > 1 {
-		which = "ports " + strings.Join(free, ", ")
-	}
+	which := portNames(nil, free...)
 	if found.MayMiss {
 		reportf(stderr, "kil: no process found on %s; another user's process is found only with sudo\n", which)
 		return
@@ -951,4 +956,16 @@ func missesAny(procs []proc.Process, pids map[int]bool) bool {
 		}
 	}
 	return false
+}
+
+// portNames names ports, as "port 3000" or "ports 3000, 5173", from their
+// numbers or from names already made.
+func portNames(ports []int, names ...string) string {
+	for _, p := range ports {
+		names = append(names, strconv.Itoa(p))
+	}
+	if len(names) == 1 {
+		return "port " + names[0]
+	}
+	return "ports " + strings.Join(names, ", ")
 }

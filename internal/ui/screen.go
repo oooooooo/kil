@@ -3,7 +3,6 @@ package ui
 import (
 	"strconv"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/uniseg"
@@ -286,8 +285,13 @@ func draw(s tcell.Screen, m Model) {
 				var g string
 				var w int
 				g, text, w, state = uniseg.FirstGraphemeClusterInString(text, state)
-				if w == 0 && utf8.RuneCountInString(g) > 0 {
-					w = 1
+				// A cluster of no width, as a zero-width space, is not
+				// drawn, as tview and ratatui do: kil lays lines out without
+				// a cell for it, and a terminal can give it one, as glibc
+				// gives a soft hyphen, which would move the terminal's
+				// cursor apart from tcell's.
+				if w == 0 {
+					continue
 				}
 				s.Put(x, y, g, st)
 				x += w

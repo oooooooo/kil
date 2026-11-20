@@ -536,3 +536,32 @@ func TestARowTakenAlwaysShowsItsPID(t *testing.T) {
 		}
 	}
 }
+
+// A cluster of no width, as a zero-width space, is not drawn, as kil lays
+// rows and the prompt out without a cell for it: given a cell of its own,
+// each pushed the rest of the line right, past the edge with the caret, and
+// sent with the cell after it, one a terminal measures otherwise, as glibc
+// gives a soft hyphen a column, moved the terminal's cursor apart from
+// tcell's.
+func TestZeroWidthClustersAreNotDrawn(t *testing.T) {
+	m := New(items("101 a"), strings.Repeat("\u200b", 30)+"a\u00adbc", "SIGKILL", noReload)
+	m, _ = press(m, WindowSizeMsg{Width: 20, Height: 5})
+	s := simScreen(t)
+	s.SetSize(20, 5)
+	draw(s, m)
+	reversed := false
+	for x := range 20 {
+		_, st, _ := s.Get(x, 4)
+		if _, _, attr := st.Decompose(); attr&tcell.AttrReverse != 0 {
+			reversed = true
+		}
+	}
+	if !reversed {
+		t.Errorf("no caret drawn in the prompt %+q", plain(promptLine(m)))
+	}
+	for x, want := range []string{"a", "b", "c"} {
+		if got, _, _ := s.Get(2+x, 4); got != want {
+			t.Errorf("cell %d of the query = %+q, want %q", x, got, want)
+		}
+	}
+}

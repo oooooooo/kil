@@ -307,21 +307,23 @@ func (m Model) scrollbar(total, offset, height int) []bool {
 func (m Model) promptText() string {
 	r := m.input.runes
 	pos := m.input.pos
+	end := m.input.next(pos)
 	caret := " "
 	if pos < len(r) {
-		caret = string(r[pos])
+		caret = string(r[pos:end])
 	}
 	// A caret too wide for the prompt, as an ambiguous-width character
 	// drawn wide on a terminal of three columns, is drawn as a space, so
-	// that the caret still shows.
-	if termwidth.String(caret) > max(m.width-2, 1) {
+	// that the caret still shows. So is a caret of no width, as a
+	// zero-width space, which takes no cell of its own.
+	if w := termwidth.String(caret); w == 0 || w > max(m.width-2, 1) {
 		caret = " "
 	}
 	room := max(m.width-2, 1) - termwidth.String(caret) // after "> "
 	before := lastClusters(string(r[:pos]), room)
 	after := ""
 	if pos < len(r) {
-		after = firstClusters(string(r[pos+1:]), room-termwidth.String(before))
+		after = firstClusters(string(r[end:]), room-termwidth.String(before))
 	}
 	return bold + before + reset + "\x1b[7m" + caret + reset + bold + after + reset
 }

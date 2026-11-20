@@ -15,6 +15,17 @@ screen at once.
 
 Using fzf is fine, and so is writing it from scratch in Go.
 
+## Fixing issues
+
+- Once an issue is fixed, and before it is committed, a new agent that knows
+  only the issue and the change, not the reasoning behind the fix, researches
+  how comparable tools handle the same problem and reviews the change against
+  them. What it finds is fixed, test first, and the fixed change goes to
+  another new agent in the same way, until a review finds nothing that needs
+  fixing; only then is it committed. A review anchored on the fixer's
+  reasoning tends to confirm it, other tools show cases the fix missed, and
+  fixes made after a review can break what it had checked.
+
 ## Decisions
 
 - Killing everything shown is done with `Alt-A` (select all shown; pressed

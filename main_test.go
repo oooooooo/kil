@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -44,6 +45,115 @@ func TestInvalidSignalIsRejectedBeforeListing(t *testing.T) {
 	code, _, errOut := runKil(t, map[string]string{"KIL_SIGNAL": "-9"})
 	if code != 2 || !strings.Contains(errOut, "KIL_SIGNAL") {
 		t.Errorf("KIL_SIGNAL=-9 kil = %d, %q; want 2 and a KIL_SIGNAL error", code, errOut)
+	}
+}
+
+func TestSignalOptionIsInTheUsage(t *testing.T) {
+	_, out, _ := runKil(t, nil, "--help")
+	if !strings.Contains(out, "-s, --signal SIG") || !strings.Contains(out, "overrides KIL_SIGNAL") {
+		t.Errorf("kil --help = %q; want -s, --signal SIG listed as overriding KIL_SIGNAL", out)
+	}
+}
+
+// fakePS puts a ps on PATH that records each run in the returned file and
+// fails, so that run returns after listing without a terminal.
+func fakePS(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runs := dir + "/runs"
+	script := "#!/bin/sh\necho run >> '" + runs + "'\necho 'ps: fake failure' >&2\nexit 1\n"
+	if err := os.WriteFile(dir+"/ps", []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	return runs
+}
+
+// An invalid or missing -s value is rejected before the process list is
+// read, naming the option as typed.
+func TestInvalidSignalOptionIsRejectedBeforeListing(t *testing.T) {
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"-s"}, "kil: -s needs a signal"},
+		{[]string{"--signal"}, "kil: --signal needs a signal"},
+		{[]string{"-s", "bogus"}, `kil: -s: invalid signal "bogus"`},
+		{[]string{"-s", ""}, `kil: -s: invalid signal ""`},
+		{[]string{"--signal="}, `kil: --signal: invalid signal ""`},
+		{[]string{"--signal=-9"}, `kil: --signal: invalid signal "-9"`},
+		{[]string{"-s", "--", "node"}, `kil: -s: invalid signal "--"`},
+		{[]string{"-s", "bogus", "-s", "TERM"}, `kil: -s: invalid signal "bogus"`},
+	}
+	for _, tt := range tests {
+		runs := fakePS(t)
+		code, _, errOut := runKil(t, map[string]string{"KIL_SIGNAL": "TERM"}, tt.args...)
+		if code != exitError || !strings.HasPrefix(errOut, tt.want) {
+			t.Errorf("kil %q = %d, %q; want %d and an error starting %q", tt.args, code, errOut, exitError, tt.want)
+		}
+		if _, err := os.Stat(runs); !os.IsNotExist(err) {
+			t.Errorf("kil %q ran ps before rejecting the option, or its record is unreadable: %v", tt.args, err)
+		}
+	}
+}
+
+// With -s, KIL_SIGNAL is not read, so an invalid one cannot stop kil.
+func TestSignalOptionDoesNotReadTheEnvironment(t *testing.T) {
+	runs := fakePS(t)
+	var asked []string
+	getenv := func(k string) string {
+		asked = append(asked, k)
+		if k == "KIL_SIGNAL" {
+			return "bogus"
+		}
+		return ""
+	}
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-s", "TERM"}, getenv, &stdout, &stderr)
+	if slices.Contains(asked, "KIL_SIGNAL") || strings.Contains(stderr.String(), "KIL_SIGNAL") {
+		t.Errorf("kil -s TERM read KIL_SIGNAL; it reported %q", stderr.String())
+	}
+	if _, err := os.Stat(runs); err != nil || code != exitError || !strings.Contains(stderr.String(), "failed to list processes") {
+		t.Errorf("kil -s TERM = %d, %q; want it to go on to list processes", code, stderr.String())
+	}
+}
+
+func TestSignalOptionWithOtherArguments(t *testing.T) {
+	tests := []struct {
+		args   []string
+		signal syscall.Signal
+		exact  bool
+		query  string
+	}{
+		{[]string{"-s", "TERM", "node"}, syscall.SIGTERM, false, "node"},
+		{[]string{"-e", "-s", "HUP", "node", "dev"}, syscall.SIGHUP, true, "node dev"},
+		{[]string{"-s", "TERM", "-e", "node"}, syscall.SIGTERM, true, "node"},
+		{[]string{"--signal=15", "--", "-zsh"}, syscall.SIGTERM, false, "-zsh"},
+		{[]string{"-s", "KILL", "--signal", "TERM"}, syscall.SIGTERM, false, ""},
+		{[]string{"-s", "0"}, 0, false, ""},
+	}
+	for _, tt := range tests {
+		got, err := parseArgs(tt.args)
+		if err != nil || !got.hasSignal || got.signal != tt.signal || got.exact != tt.exact || got.query != tt.query {
+			t.Errorf("parseArgs(%q) = %+v, %v; want signal %v, exact %v, query %q", tt.args, got, err, tt.signal, tt.exact, tt.query)
+		}
+	}
+	queries := []struct {
+		args  []string
+		query string
+	}{
+		{[]string{"--", "-s", "TERM"}, "-s TERM"},
+		{[]string{"node", "-s", "TERM"}, "node -s TERM"},
+		{[]string{"node", "--signal=TERM"}, "node --signal=TERM"},
+	}
+	for _, tt := range queries {
+		got, err := parseArgs(tt.args)
+		if err != nil || got.hasSignal || got.query != tt.query {
+			t.Errorf("parseArgs(%q) = %+v, %v; want no signal and query %q", tt.args, got, err, tt.query)
+		}
+	}
+	if got, err := parseArgs([]string{"-s", "TERM", "-h"}); err != nil || !got.help {
+		t.Errorf("parseArgs(-s TERM -h) = %+v, %v; want help", got, err)
 	}
 }
 

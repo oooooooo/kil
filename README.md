@@ -25,13 +25,15 @@ go install github.com/oooooooo/kil@latest
 ## Usage
 
 ```sh
-kil            # browse all processes
-kil node       # start with "node" as the initial query
-kil node dev   # arguments are joined into one query: "node dev"
-kil -e node    # exact match: only lines that contain "node"
-kil -- -zsh    # use -- when the query starts with "-"
-kil --help     # show usage
-kil --version  # show the version
+kil               # browse all processes
+kil node          # start with "node" as the initial query
+kil node dev      # arguments are joined into one query: "node dev"
+kil -e node       # exact match: only lines that contain "node"
+kil -s TERM node  # send SIGTERM instead of SIGKILL (also --signal=15)
+kil -- -zsh       # use -- when the query starts with "-"
+kil node -s TERM  # options go first: this searches for "node -s TERM"
+kil --help        # show usage
+kil --version     # show the version
 ```
 
 ### Query syntax
@@ -66,7 +68,7 @@ instead. The info line shows `[exact]` in this mode.
 | `Alt-A` | Select every process drawn on screen, or deselect them all if they are all selected already. Matches scrolled off screen are not selected |
 | `Ctrl-X` | Switch between fuzzy and exact matching |
 | `Ctrl-R` | Refresh the process list, keeping your query and selections |
-| `Enter` | Kill the selected processes, or the one under the cursor if none are selected. Only processes on screen are killed: if some selected ones are off screen, `kil` stays open with them brought on screen, and `Enter` again kills them |
+| `Enter` | Send the signal (`SIGKILL` unless `-s` or `KIL_SIGNAL` chooses another) to the selected processes, or the one under the cursor if none are selected. Only processes on screen are signalled: if some selected ones are off screen, `kil` stays open with them brought on screen, and `Enter` again signals them |
 | `Ctrl-C` / `Esc` | Abort. After `Enter` killed only part of the selection, `Esc` asks before leaving the rest (`Y` / `Enter` to leave, `n` to stay) |
 | `Ctrl-Z` | Suspend `kil` as a shell job; `fg` brings it back. Does nothing when `kil` was not started from a shell, as with `tmux new-session kil` |
 | `Alt-H` | Show every key in place of the list. Any key other than `Ctrl-C` and `Ctrl-Z`, including `Esc`, only closes it |
@@ -88,7 +90,7 @@ process.
 | --- | --- |
 | `0` | Every selected process was signalled |
 | `1` | Nothing was selected, some processes were skipped or failed, or selected processes were left unsignalled |
-| `2` | Usage error, invalid `KIL_SIGNAL` or `KIL_EXACT`, listing processes failed, or no terminal |
+| `2` | Usage error, invalid `-s`, `KIL_SIGNAL`, or `KIL_EXACT`, listing processes failed, or no terminal |
 | `130` | Aborted with `Ctrl-C` / `Esc` |
 | `128`+n | Ended by signal n: `129` for `SIGHUP`, `131` for `SIGQUIT`, `143` for `SIGTERM`. A `SIGINT`, `SIGTERM`, or `SIGQUIT` while `kil` is sending signals stops it, and the processes not reached are reported as `skipped:`; `SIGHUP` does not |
 
@@ -96,15 +98,15 @@ process.
 
 | Environment variable | Default | Description |
 | --- | --- | --- |
-| `KIL_SIGNAL` | `9` (SIGKILL) | Signal number or name to send, e.g. `KIL_SIGNAL=15 kil` or `KIL_SIGNAL=TERM kil`. Invalid values, and numbers without a name such as Linux real-time signals, are rejected. |
+| `KIL_SIGNAL` | `9` (SIGKILL) | Signal number or name to send, e.g. `KIL_SIGNAL=15 kil` or `KIL_SIGNAL=TERM kil`. Invalid values, and numbers without a name such as Linux real-time signals, are rejected. `-s` / `--signal` takes the same values and overrides it. |
 | `KIL_EXACT` | unset (fuzzy) | Set to `1` to start in exact mode, as with `-e`. |
 | `RUNEWIDTH_EASTASIAN` | unset | Set to `1` if your terminal draws characters of ambiguous width, such as `·` and `─`, two columns wide, as fzf reads it. |
 
 ## Notes
 
 - The default signal is `SIGKILL` (`kill -9`), which terminates processes
-  immediately without giving them a chance to clean up. Use `KIL_SIGNAL=15` for
-  a graceful shutdown.
+  immediately without giving them a chance to clean up. Use `kil -s TERM` or
+  `KIL_SIGNAL=15` for a graceful shutdown.
 - `kil` hides only itself and its children. The shell you started `kil` from,
   other `kil` sessions, and `sudo` stay in the list; be careful not to select
   those.

@@ -22,16 +22,19 @@ import (
 	"github.com/oooooooo/kil/internal/width"
 )
 
-const usage = `Usage: kil [--] [query...]
+const usage = `Usage: kil [options] [--] [query...]
 
 Filter processes interactively and send a signal to the selected ones.
-All arguments are joined with spaces into the initial query.
+Options come first: the arguments from the first that is not an option
+are joined with spaces into the initial query.
 
 Options:
-  -e, --exact  Match plain terms exactly, as fzf --exact ('term matches fuzzily)
-  -h, --help   Show this help and exit
-  --version    Show the version and exit
-  --           Treat the remaining arguments as the query (e.g. kil -- -zsh)
+  -e, --exact       Match plain terms exactly, as fzf --exact ('term matches
+                    fuzzily)
+  -s, --signal SIG  Signal to send, as 15 or TERM; overrides KIL_SIGNAL
+  -h, --help        Show this help and exit
+  --version         Show the version and exit
+  --                Treat the remaining arguments as the query (e.g. kil -- -zsh)
 
 Environment:
   KIL_SIGNAL   Signal number or name to send (default: 9, i.e. SIGKILL)
@@ -40,7 +43,7 @@ Environment:
 Exit status:
   0      every selected process was signalled
   1      nothing was selected, or some processes were skipped or failed
-  2      usage error, invalid KIL_SIGNAL or KIL_EXACT, listing processes
+  2      usage error, invalid -s, KIL_SIGNAL, or KIL_EXACT, listing processes
          failed, or no terminal
   130    aborted with Ctrl-C / Esc
   128+n  ended by signal n: 129 for SIGHUP, 131 for SIGQUIT, 143 for SIGTERM
@@ -66,15 +69,18 @@ func ignoreBrokenPipe() {
 }
 
 type options struct {
-	help    bool
-	version bool
-	exact   bool
-	query   string
+	help      bool
+	version   bool
+	exact     bool
+	signal    syscall.Signal
+	hasSignal bool
+	query     string
 }
 
 func parseArgs(args []string) (options, error) {
 	var opts options
-	for i, a := range args {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
 		switch {
 		case a == "-h" || a == "--help":
 			return options{help: true}, nil
@@ -82,6 +88,18 @@ func parseArgs(args []string) (options, error) {
 			return options{version: true}, nil
 		case a == "-e" || a == "--exact":
 			opts.exact = true
+		case a == "-s" || a == "--signal":
+			if i+1 == len(args) {
+				return options{}, fmt.Errorf("%s needs a signal, a number like 15 or a name like TERM", a)
+			}
+			i++
+			if err := opts.setSignal(a, args[i]); err != nil {
+				return options{}, err
+			}
+		case strings.HasPrefix(a, "--signal="):
+			if err := opts.setSignal("--signal", strings.TrimPrefix(a, "--signal=")); err != nil {
+				return options{}, err
+			}
 		case a == "--":
 			opts.query = strings.Join(args[i+1:], " ")
 			return opts, nil
@@ -93,6 +111,19 @@ func parseArgs(args []string) (options, error) {
 		}
 	}
 	return opts, nil
+}
+
+// setSignal sets the signal given to the option name. Every value is
+// checked, even one a later option replaces, so that a typo is reported.
+func (o *options) setSignal(name, value string) error {
+	// signal.Parse takes an empty value as the default, which suits an
+	// unset KIL_SIGNAL but would hide an empty -s.
+	sig, err := signal.Parse(value)
+	if value == "" || err != nil {
+		return fmt.Errorf("%s: invalid signal %q (use a number like 15 or a name like TERM)", name, value)
+	}
+	o.signal, o.hasSignal = sig, true
+	return nil
 }
 
 // exactFromEnv parses KIL_EXACT. An unset or empty value means fuzzy.
@@ -139,10 +170,13 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// Rows are laid out with this width from the listing on, so it is set
 	// first.
 	width.SetAmbiguousWide(width.FromEnv(getenv))
-	sig, err := signal.Parse(getenv("KIL_SIGNAL"))
-	if err != nil {
-		reportf(stderr, "kil: invalid KIL_SIGNAL: %v (use a number like 15 or a name like TERM)\n", err)
-		return exitError
+	sig := opts.signal
+	if !opts.hasSignal {
+		sig, err = signal.Parse(getenv("KIL_SIGNAL"))
+		if err != nil {
+			reportf(stderr, "kil: invalid KIL_SIGNAL: %v (use a number like 15 or a name like TERM)\n", err)
+			return exitError
+		}
 	}
 
 	list := func() ([]picker.Item, error) {

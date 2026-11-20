@@ -241,3 +241,11 @@ Using fzf is fine, and so is writing it from scratch in Go.
   before its signal, as checking all of them first would leave the PID of the
   last one longer to be reused. Once a stop is caught, kil starts no further
   check, as ps can take a while.
+- The signal is chosen with `-s` / `--signal`, as with kill(1), or with
+  `KIL_SIGNAL`. Only `KIL_SIGNAL` existed, so `kil -s TERM`, typed from the
+  habit of kill(1), was rejected as an unknown option. The option overrides
+  `KIL_SIGNAL`, which is then not read, so an invalid value left in the
+  environment cannot stop a command that names its signal. Every value is
+  checked, even one a later `-s` replaces, so that a typo is reported rather
+  than hidden, and an empty value is an error rather than the default
+  `SIGKILL`.

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -116,8 +117,9 @@ func TestShellChild(t *testing.T) {
 	os.Exit(0)
 }
 
-// When KIL_TEST_KIL is set, this test is kil, started by TestShellChild. It
-// records its PID and exit status, and its reports, in KIL_TEST_DIR.
+// When KIL_TEST_KIL is set, this test is kil, started by TestShellChild, with
+// the arguments in KIL_TEST_ARGS, one per line. It records its PID and exit
+// status, and its reports, in KIL_TEST_DIR.
 func TestKilChild(t *testing.T) {
 	if os.Getenv("KIL_TEST_KIL") == "" {
 		t.Skip("run by TestShellChild")
@@ -133,7 +135,11 @@ func TestKilChild(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	code := run(nil, os.Getenv, stdout, stdout)
+	var args []string
+	if a := os.Getenv("KIL_TEST_ARGS"); a != "" {
+		args = strings.Split(a, "\n")
+	}
+	code := run(args, os.Getenv, stdout, stdout)
 	write("code", strconv.Itoa(code))
 	os.Exit(code)
 }
@@ -479,6 +485,100 @@ func TestUnknownTermStillStarts(t *testing.T) {
 			k.send("\x03")
 			if code := k.code(); code != exitAborted {
 				t.Errorf("Ctrl-C: exit status %d, want %d", code, exitAborted)
+			}
+		})
+	}
+}
+
+// startSleeper starts a process named by tag for kil to signal, and returns
+// a channel closed when it has exited.
+func startSleeper(t *testing.T, tag string) (*exec.Cmd, chan struct{}) {
+	t.Helper()
+	sleeper := exec.Command(os.Args[0], "-test.run=^TestSleeperChild$", tag)
+	sleeper.Env = append(os.Environ(), "KIL_TEST_SLEEPER=1")
+	if err := sleeper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan struct{})
+	go func() {
+		_ = sleeper.Wait()
+		close(exited)
+	}()
+	t.Cleanup(func() {
+		_ = sleeper.Process.Kill()
+		<-exited
+	})
+	return sleeper, exited
+}
+
+// -s and --signal choose the signal Enter sends, over KIL_SIGNAL, which is
+// then not read, and the arguments after them are still the query.
+func TestSignalOptionChoosesTheSignal(t *testing.T) {
+	tests := []struct {
+		name   string
+		opt    []string
+		env    string
+		tab    bool
+		want   syscall.Signal
+		header string
+	}{
+		{"short over 0", []string{"-s", "TERM"}, "KIL_SIGNAL=0", false, syscall.SIGTERM, "Enter SIGTERM"},
+		{"long number over KILL", []string{"--signal", "1"}, "KIL_SIGNAL=KILL", true, syscall.SIGHUP, "Enter SIGHUP"},
+		{"equals over invalid", []string{"--signal=sigint"}, "KIL_SIGNAL=bogus", false, syscall.SIGINT, "Enter SIGINT"},
+		{"over unset", []string{"-s", "TERM"}, "KIL_SIGNAL=", false, syscall.SIGTERM, "Enter SIGTERM"},
+		{"repeated with -e", []string{"-s", "KILL", "-e", "--signal", "TERM"}, "KIL_EXACT=0", true, syscall.SIGTERM, "Enter SIGTERM"},
+		{"signal 0 over TERM", []string{"-s", "0"}, "KIL_SIGNAL=15", false, 0, "Enter signal 0"},
+		{"no option, KIL_SIGNAL=15", nil, "KIL_SIGNAL=15", false, syscall.SIGTERM, "Enter SIGTERM"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tag := fmt.Sprintf("kilsig%d", time.Now().UnixNano())
+			target, exited := startSleeper(t, tag)
+			// The bystander does not match the query, so it must survive.
+			_, bystanderExited := startSleeper(t, "kilbystander")
+
+			args := append(append([]string{}, tt.opt...), tag)
+			k := startKil(t, "KIL_EXACT=1", tt.env, "KIL_TEST_ARGS="+strings.Join(args, "\n"))
+			k.waitFor(0, tt.header)
+			time.Sleep(500 * time.Millisecond)
+			if tt.tab {
+				k.send("\t")
+				time.Sleep(500 * time.Millisecond)
+			}
+			k.send("\r")
+			if code := k.code(); code != exitOK {
+				t.Errorf("exit status %d, want %d", code, exitOK)
+			}
+
+			if tt.want == 0 {
+				select {
+				case <-exited:
+					t.Errorf("signal 0 ended the process: %v", target.ProcessState)
+				case <-time.After(500 * time.Millisecond):
+				}
+			} else {
+				select {
+				case <-exited:
+				case <-time.After(5 * time.Second):
+					out, _ := os.ReadFile(filepath.Join(k.dir, "stdout"))
+					t.Fatalf("the process matching the query was not ended; kil reported:\n%s", out)
+				}
+				ws, _ := target.ProcessState.Sys().(syscall.WaitStatus)
+				if !ws.Signaled() || ws.Signal() != tt.want {
+					t.Errorf("the process ended with %v, want %v", target.ProcessState, tt.want)
+				}
+			}
+			select {
+			case <-bystanderExited:
+				t.Error("a process not matching the query was ended")
+			default:
+			}
+
+			out, _ := os.ReadFile(filepath.Join(k.dir, "stdout"))
+			label := strings.TrimPrefix(tt.header, "Enter ")
+			report := regexp.MustCompile(fmt.Sprintf(`(?m)^sent %s: +%d .*%s`, regexp.QuoteMeta(label), target.Process.Pid, tag))
+			if !report.Match(out) || strings.Count(string(out), "sent ") != 1 {
+				t.Errorf("kil reported %q, want only PID %d reported as sent %s", out, target.Process.Pid, label)
 			}
 		})
 	}

@@ -87,11 +87,11 @@ process.
 
 ### Waiting with `--timeout`
 
-`kil --timeout 5s` (or `--timeout 5`) waits up to 5 seconds, counted from
-the last signal it sent, for the processes it signalled to end, and then
-sends `SIGKILL` to those still there. The first signal is `SIGTERM` unless
-`-s` or `KIL_SIGNAL` chooses another; signal 0 is refused, as it ends
-nothing.
+`kil --timeout 5s` (or `--timeout 5`) waits up to 5 seconds, counted from when
+the picker has ended and kil has sent its signals, for the processes it
+signalled to end, and then sends `SIGKILL` to those still there. The first
+signal is `SIGTERM` unless `-s` or `KIL_SIGNAL` chooses another; signal 0 is
+refused, as it ends nothing.
 
 - Each process is sent `SIGCONT` right after the signal, so that a job
   suspended with `Ctrl-Z` can act on it, unless the signal chosen stops or
@@ -102,6 +102,8 @@ nothing.
 - A process whose `ps` line or start time changed while kil waited, as one
   that ran another program, may no longer be the one you chose, so it is
   reported as `skipped: process changed, not sent SIGKILL:` and left alone.
+  So is one whose start time kil could not read before the signal, reported
+  as `failed: reading the start time:`.
 - Processes signalled by an `Enter` that left others off screen are waited
   for too, even if you then leave with `Esc` or `Ctrl-C`.
 - `Ctrl-C`, `SIGINT`, `SIGTERM`, or `SIGQUIT` while kil waits stops it

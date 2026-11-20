@@ -636,12 +636,14 @@ func reportln(w io.Writer, s string) { _, _ = fmt.Fprintln(w, s) }
 
 // A waited is a process signalled with --timeout, with its start time, so
 // that a process that later has its PID and command line is not taken for
-// it. Start is "" when ps could not tell it, and gone for a process that had
-// already exited.
+// it. Start is gone for a process that had already exited; startErr is set
+// when the start time could not be read, which leaves only the line to
+// check while waiting, and too little to send SIGKILL on.
 type waited struct {
 	picker.Item
-	pid   int
-	start string
+	pid      int
+	start    string
+	startErr error
 }
 
 const gone = "gone"
@@ -664,7 +666,7 @@ func started(targets []picker.Item) map[string]waited {
 	for id, w := range ws {
 		switch st, ok := states[w.pid]; {
 		case err != nil:
-			w.start = ""
+			w.start, w.startErr = "", err
 		case ok:
 			w.start = st.Start
 		}
@@ -739,15 +741,7 @@ func lookupWaited(pids []int) (map[int]string, error) {
 
 // want returns the identity lookupWaited gives the process while it is the
 // one signalled.
-func (w waited) want(now map[int]proc.State) string {
-	start := w.start
-	if start == "" {
-		// ps could not tell the start time after the signal, so only the
-		// line is compared.
-		start = now[w.pid].Start
-	}
-	return w.ID + "\x00" + start
-}
+func (w waited) want() string { return w.ID + "\x00" + w.start }
 
 // sortOut reports the targets that exited or changed and returns those still
 // running as they were chosen.
@@ -771,7 +765,7 @@ func sortOut(targets []waited, stdout, stderr io.Writer, code *int) ([]waited, e
 		switch {
 		case !ok || !stOK || st.Zombie:
 			reportf(stdout, "exited: %s\n", w.Text)
-		case w.start == gone || line+"\x00"+st.Start != w.want(states):
+		case w.start == gone || line != w.ID || (w.startErr == nil && st.Start != w.start):
 			reportf(stderr, "skipped: process changed, not sent SIGKILL: %s\n", w.Text)
 			*code = exitProblems
 		default:
@@ -785,17 +779,18 @@ func sortOut(targets []waited, stdout, stderr io.Writer, code *int) ([]waited, e
 // the same check as the first signal, with the start time.
 func killRest(targets []waited, timeout time.Duration, stdout, stderr io.Writer, in *interrupts) int {
 	code := exitOK
-	pids := make([]int, len(targets))
-	for i, w := range targets {
-		pids[i] = w.pid
+	var send []signal.Target
+	var checked []waited
+	for _, w := range targets {
+		if w.startErr != nil {
+			reportf(stderr, "failed: reading the start time: %v, not sent SIGKILL: %s\n", w.startErr, w.Text)
+			code = exitProblems
+			continue
+		}
+		send = append(send, signal.Target{PID: w.pid, Want: w.want()})
+		checked = append(checked, w)
 	}
-	// The start times are needed only for a process whose start time was
-	// not known; without them, its check fails and it is not signalled.
-	states, _ := lookupStates(pids)
-	send := make([]signal.Target, len(targets))
-	for i, w := range targets {
-		send[i] = signal.Target{PID: w.pid, Want: w.want(states)}
-	}
+	targets = checked
 	var skipped []waited
 	next := 0
 	signal.SendAll(send, syscall.SIGKILL, lookupWaited, func() bool { return in.stopping() != nil }, func(i int, outcome signal.Outcome, err error) {

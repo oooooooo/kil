@@ -252,22 +252,23 @@ Using fzf is fine, and so is writing it from scratch in Go.
 - `--timeout DUR` sends the signal, SIGTERM by default, waits up to DUR, and
   sends SIGKILL to what is left, as `systemctl stop` and `docker stop` do.
   Making that the default was rejected: kil stands in for `kill -9`, and a
-  process that ignores SIGTERM would hold every `Enter` for the whole wait.
-  Each process gets SIGCONT after the signal, as systemd sends it, since a
-  stopped job acts on nothing but SIGKILL; a signal that stops or continues
-  is not followed by it, which would undo `-s STOP`. The wait counts from
-  the last signal, so that each process has the whole of it, and covers
-  processes signalled by a partial `Enter`, whatever then ends the picker,
-  as the user chose them all. A zombie is taken as exited, as SIGKILL cannot
-  end it. A line that changed otherwise is not taken as exited: PostgreSQL,
-  for one, rewrites its process title as it shuts down, and a PID can be
-  reused, so kil reports the process and leaves it rather than claim it
-  ended or kill what may be another process. The pidfd of the first signal
-  is closed before the wait, so the check also compares the start time, as
-  a supervisor can restart a process with the same command line under a
-  reused PID. The start time is read before the signal: read after it, a
-  test that reused the PID in a PID namespace as soon as SIGTERM arrived
-  had its new process sent SIGKILL. On Linux the start time is read
-  from `/proc/<pid>/stat`: procps prints it as the clock less the uptime,
-  which moved by a second between runs and made the process look like
-  another one.
+  process that ignores SIGTERM would hold every `Enter` for the whole wait. Each
+  process gets SIGCONT after the signal, as systemd sends it, since a stopped
+  job acts on nothing but SIGKILL; a signal that stops or continues is not
+  followed by it, which would undo `-s STOP`. The wait counts from the picker's
+  end, once every signal is sent, so that each process has at least the whole of
+  it, and covers processes signalled by a partial `Enter`, whatever then ends
+  the picker, as the user chose them all. A zombie is taken as exited, as
+  SIGKILL cannot end it. A line that changed otherwise is not taken as exited:
+  PostgreSQL, for one, rewrites its process title as it shuts down, and a PID
+  can be reused, so kil reports the process and leaves it rather than claim it
+  ended or kill what may be another process. The pidfd of the first signal is
+  closed before the wait, so the check also compares the start time, as a
+  supervisor can restart a process with the same command line under a reused
+  PID. The start time is read before the signal: read after it, a test that
+  reused the PID in a PID namespace as soon as SIGTERM arrived had its new
+  process sent SIGKILL. A process whose start time could not be read is waited
+  for by its line alone but not sent SIGKILL: compared with its start time read
+  later, the new process passed for it. On Linux the start time is read from
+  `/proc/<pid>/stat`: procps prints it as the clock less the uptime, which moved
+  by a second between runs and made the process look like another one.

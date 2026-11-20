@@ -600,3 +600,44 @@ func TestTimeoutTellsAReusedPIDByItsStartTime(t *testing.T) {
 		t.Errorf("the process was ended: %v", err)
 	}
 }
+
+// A process whose start time could not be read before the signal cannot be
+// told from a later process given its PID, so it is not sent SIGKILL, and
+// the failure is reported. /proc and ps cannot be made to fail from
+// outside, so the lookup is replaced.
+func TestTimeoutWithoutAStartTime(t *testing.T) {
+	sleeper := exec.Command(os.Args[0], "-test.run=^TestSleeperChild$")
+	sleeper.Env = append(os.Environ(), "KIL_TEST_SLEEPER=1")
+	if err := sleeper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sleeper.Process.Kill(); _ = sleeper.Wait() }()
+	pid := sleeper.Process.Pid
+	line := fmt.Sprintf("%d sleeper", pid)
+	savedLines, savedStates := lookupLines, lookupStates
+	defer func() { lookupLines, lookupStates = savedLines, savedStates }()
+	lookupLines = func([]int) (map[int]string, error) { return map[int]string{pid: line}, nil }
+	calls := 0
+	lookupStates = func(pids []int) (map[int]proc.State, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("states unreadable")
+		}
+		return savedStates(pids)
+	}
+
+	b := &batches{timeout: 300 * time.Millisecond}
+	var stdout, stderr bytes.Buffer
+	// SIGCONT leaves the sleeper running, as one that ignored SIGTERM.
+	if code := b.signal([]picker.Item{{ID: line, Text: line}}, syscall.SIGCONT, &stdout, &stderr, nil); code != exitOK {
+		t.Fatalf("signal = %d, stderr %q", code, stderr.String())
+	}
+	code := waitAndKill(b.waiting, b.timeout, &stdout, &stderr, nil)
+	want := "failed: reading the start time: states unreadable, not sent SIGKILL: " + line + "\n"
+	if code != exitProblems || stderr.String() != want || strings.Contains(stdout.String(), "SIGKILL") {
+		t.Errorf("waitAndKill = %d, stdout %q, stderr %q; want %d and %q", code, stdout.String(), stderr.String(), exitProblems, want)
+	}
+	if err := sleeper.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Errorf("the process was ended: %v", err)
+	}
+}

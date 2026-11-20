@@ -781,12 +781,20 @@ func TestTimeoutWithAReusedPID(t *testing.T) {
 	// kil is stopped while the PID changes hands, once no ps of its own is
 	// running, so that it does not see the PID free and take the process
 	// as exited, which it is, but which leaves nothing to check.
-	if err := syscall.Kill(k.pid, syscall.SIGSTOP); err != nil {
-		t.Fatal(err)
-	}
+	// A ps that ends while kil is stopped stays a zombie until kil reaps
+	// it, so kil is let run again for that and stopped once more.
 	waitUntil(t, "kil to stop with no child", func() bool {
-		children, _ := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/children", k.pid, k.pid))
-		return procState(k.pid) == "T" && strings.TrimSpace(string(children)) == ""
+		if err := syscall.Kill(k.pid, syscall.SIGSTOP); err != nil {
+			t.Fatal(err)
+		}
+		for procState(k.pid) != "T" {
+			time.Sleep(time.Millisecond)
+		}
+		if !hasChildren(k.pid) {
+			return true
+		}
+		_ = syscall.Kill(k.pid, syscall.SIGCONT)
+		return false
 	})
 	// The first process ends, and another with its command line takes its
 	// PID.
@@ -828,4 +836,18 @@ func TestTimeoutWithAReusedPID(t *testing.T) {
 	}
 	checkReports(t, "stdout", k.stdout(), pid, "sent SIGTERM")
 	checkReports(t, "stderr", k.stderr(), pid, "skipped: process changed, not sent SIGKILL")
+}
+
+// hasChildren reports whether any thread of pid has started a process that
+// has not been reaped: Go starts a child from whichever thread runs the
+// goroutine, and each thread lists only its own.
+func hasChildren(pid int) bool {
+	tasks, _ := os.ReadDir(fmt.Sprintf("/proc/%d/task", pid))
+	for _, task := range tasks {
+		children, _ := os.ReadFile(fmt.Sprintf("/proc/%d/task/%s/children", pid, task.Name()))
+		if strings.TrimSpace(string(children)) != "" {
+			return true
+		}
+	}
+	return false
 }

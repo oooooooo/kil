@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/oooooooo/kil/internal/picker"
+	"github.com/oooooooo/kil/internal/port"
 	"github.com/oooooooo/kil/internal/proc"
 	"github.com/oooooooo/kil/internal/ui"
 	"github.com/oooooooo/kil/internal/width"
@@ -222,6 +223,55 @@ func TestTimeoutValues(t *testing.T) {
 		if err != nil || got.timeout != 0 || !strings.Contains(got.query, "--timeout 5") {
 			t.Errorf("parseArgs(%q) = %+v, %v; want --timeout kept in the query", args, got, err)
 		}
+	}
+}
+
+// Arguments that are a colon and a port name ports to list the processes
+// of; others, or any after --, stay in the query.
+func TestPortArguments(t *testing.T) {
+	tests := []struct {
+		args  []string
+		ports []int
+		query string
+	}{
+		{[]string{":3000"}, []int{3000}, ""},
+		{[]string{":3000", ":5173", "node"}, []int{3000, 5173}, "node"},
+		{[]string{"node", ":3000", "dev"}, []int{3000}, "node dev"},
+		{[]string{"-e", ":65535"}, []int{65535}, ""},
+		{[]string{"--", ":3000"}, nil, ":3000"},
+		{[]string{":abc", "node:3000"}, nil, ":abc node:3000"},
+		{[]string{":"}, nil, ":"},
+		{[]string{":1", ":03000", ":3000"}, []int{1, 3000}, ""},
+		{[]string{":+3000", ":3000x"}, nil, ":+3000 :3000x"},
+		{[]string{":3000", "--", ":5173"}, []int{3000}, ":5173"},
+	}
+	for _, tt := range tests {
+		got, err := parseArgs(tt.args)
+		if err != nil || !slices.Equal(got.ports, tt.ports) || got.query != tt.query {
+			t.Errorf("parseArgs(%q) = %+v, %v; want ports %v and query %q", tt.args, got, err, tt.ports, tt.query)
+		}
+	}
+}
+
+func TestInvalidPortIsRejectedBeforeListing(t *testing.T) {
+	for _, args := range [][]string{{":0"}, {":65536"}, {":99999999999999999999"}, {"node", ":3000", ":0"}} {
+		arg := args[len(args)-1]
+		runs := fakePS(t)
+		code, _, errOut := runKil(t, nil, args...)
+		want := fmt.Sprintf("kil: invalid port %q (use 1 to 65535, or 'kil -- %s' to search for it)", arg, arg)
+		if code != exitError || !strings.HasPrefix(errOut, want) {
+			t.Errorf("kil %s = %d, %q; want %d and %q", arg, code, errOut, exitError, want)
+		}
+		if _, err := os.Stat(runs); !os.IsNotExist(err) {
+			t.Errorf("kil %s ran ps before rejecting the port: %v", arg, err)
+		}
+	}
+}
+
+func TestPortIsInTheUsage(t *testing.T) {
+	_, out, _ := runKil(t, nil, "--help")
+	if !strings.Contains(out, ":PORT") {
+		t.Errorf("kil --help = %q; want :PORT described", out)
 	}
 }
 
@@ -598,5 +648,36 @@ func TestTimeoutTellsAReusedPIDByItsStartTime(t *testing.T) {
 	}
 	if err := sleeper.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Errorf("the process was ended: %v", err)
+	}
+}
+
+// A port held only by processes kil cannot see, as another user's without
+// root, is not reported as free: kil names the user and suggests sudo. No
+// such process can be made without root, so the lookup is replaced.
+func TestPortHeldByAProcessKilCannotSee(t *testing.T) {
+	saved := findPorts
+	defer func() { findPorts = saved }()
+	findPorts = func([]int) (port.Result, error) {
+		return port.Result{PIDs: map[int]bool{}, Hidden: map[int][]int{3000: {0}}}, nil
+	}
+	code, _, errOut := runKil(t, nil, ":3000")
+	want := "kil: port 3000 is held by a process of user root, which kil cannot see; try sudo kil :3000\n"
+	if code != exitProblems || errOut != want {
+		t.Errorf("kil :3000 = %d, %q; want %d and %q", code, errOut, exitProblems, want)
+	}
+}
+
+// A port held only by an unseen process is reported even when another
+// port given has processes kil lists, before the picker starts.
+func TestHiddenHolderIsReportedBesideVisibleOnes(t *testing.T) {
+	saved := findPorts
+	defer func() { findPorts = saved }()
+	findPorts = func([]int) (port.Result, error) {
+		return port.Result{PIDs: map[int]bool{os.Getppid(): true}, Hidden: map[int][]int{5173: {0}}}, nil
+	}
+	_, _, errOut := runKil(t, nil, ":3000", ":5173")
+	want := "kil: port 5173 is held by a process of user root, which kil cannot see; try sudo kil :5173\n"
+	if !strings.HasPrefix(errOut, want) {
+		t.Errorf("kil :3000 :5173 reported %q; want it to start with %q", errOut, want)
 	}
 }

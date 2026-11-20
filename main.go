@@ -9,7 +9,10 @@ import (
 	"math"
 	"os"
 	ossignal "os/signal"
+	"os/user"
+	"regexp"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,17 +22,20 @@ import (
 	"github.com/gdamore/tcell/v2"
 
 	"github.com/oooooooo/kil/internal/picker"
+	"github.com/oooooooo/kil/internal/port"
 	"github.com/oooooooo/kil/internal/proc"
 	"github.com/oooooooo/kil/internal/signal"
 	"github.com/oooooooo/kil/internal/ui"
 	"github.com/oooooooo/kil/internal/width"
 )
 
-const usage = `Usage: kil [options] [--] [query...]
+const usage = `Usage: kil [options] [:PORT...] [--] [query...]
 
 Filter processes interactively and send a signal to the selected ones.
 Options come first: the arguments from the first that is not an option
-are joined with spaces into the initial query.
+are joined with spaces into the initial query. An argument :PORT, as :3000,
+lists only the processes listening on that TCP port or bound to that UDP
+port; after --, it is part of the query.
 
 Options:
   -e, --exact       Match plain terms exactly, as fzf --exact ('term matches
@@ -81,6 +87,7 @@ type options struct {
 	signal    syscall.Signal
 	hasSignal bool
 	timeout   time.Duration
+	ports     []int
 	query     string
 }
 
@@ -125,11 +132,38 @@ func parseArgs(args []string) (options, error) {
 		case strings.HasPrefix(a, "-") && a != "-":
 			return options{}, fmt.Errorf("unknown option: %s (use 'kil -- %s' to search for it)", a, a)
 		default:
-			opts.query = strings.Join(args[i:], " ")
-			return opts, nil
+			return opts, opts.setQuery(args[i:])
 		}
 	}
 	return opts, nil
+}
+
+// portArg matches an argument that names a port.
+var portArg = regexp.MustCompile(`^:[0-9]+$`)
+
+// setQuery sets the query from args, taking out the ports they name up to
+// a --, after which every argument is part of the query.
+func (o *options) setQuery(args []string) error {
+	var words []string
+	for i, a := range args {
+		if a == "--" {
+			words = append(words, args[i+1:]...)
+			break
+		}
+		if !portArg.MatchString(a) {
+			words = append(words, a)
+			continue
+		}
+		port, err := strconv.Atoi(a[1:])
+		if err != nil || port < 1 || port > 65535 {
+			return fmt.Errorf("invalid port %q (use 1 to 65535, or 'kil -- %s' to search for it)", a, a)
+		}
+		if !slices.Contains(o.ports, port) {
+			o.ports = append(o.ports, port)
+		}
+	}
+	o.query = strings.Join(words, " ")
+	return nil
 }
 
 // setSignal sets the signal given to the option name. Every value is
@@ -231,10 +265,19 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		label += fmt.Sprintf(" (KILL after %v)", opts.timeout)
 	}
 
+	var found port.Result
 	list := func() ([]picker.Item, error) {
 		procs, err := proc.List(os.Getpid())
 		if err != nil {
 			return nil, err
+		}
+		if len(opts.ports) > 0 {
+			// The ports are read after the listing, so that a process that
+			// took a port meanwhile is not missing from it.
+			if found, err = findPorts(opts.ports); err != nil {
+				return nil, fmt.Errorf("finding the processes on the ports: %w", err)
+			}
+			procs = slices.DeleteFunc(procs, func(p proc.Process) bool { return !found.PIDs[p.PID] })
 		}
 		items := make([]picker.Item, len(procs))
 		for i, p := range procs {
@@ -246,6 +289,14 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	if err != nil {
 		reportf(stderr, "kil: failed to list processes: %v; nothing was signalled\n", err)
 		return exitError
+	}
+	if len(opts.ports) > 0 {
+		hiddenOnPorts(opts.ports, found, stderr)
+		if len(items) == 0 {
+			// There is nothing to pick from, so the terminal is left alone.
+			nothingOnPorts(opts.ports, found, stderr)
+			return exitProblems
+		}
 	}
 
 	// Until now, signals take their default action: nothing has been
@@ -826,4 +877,49 @@ func killRest(targets []waited, timeout time.Duration, stdout, stderr io.Writer,
 		code = exitProblems
 	}
 	return code
+}
+
+// hiddenOnPorts reports the ports held by processes kil cannot see, with
+// their users, so that such a port is not taken for a free one.
+func hiddenOnPorts(ports []int, found port.Result, stderr io.Writer) {
+	for _, p := range ports {
+		uids := found.Hidden[p]
+		if len(uids) == 0 {
+			continue
+		}
+		names := make([]string, len(uids))
+		for i, uid := range uids {
+			names[i] = "uid " + strconv.Itoa(uid)
+			if u, err := user.LookupId(strconv.Itoa(uid)); err == nil {
+				names[i] = u.Username
+			}
+		}
+		who := "user " + names[0]
+		if len(names) > 1 {
+			who = "users " + strings.Join(names, ", ")
+		}
+		reportf(stderr, "kil: port %d is held by a process of %s, which kil cannot see; try sudo kil :%d\n", p, who, p)
+	}
+}
+
+// nothingOnPorts reports the ports on which nothing at all was found.
+func nothingOnPorts(ports []int, found port.Result, stderr io.Writer) {
+	var free []string
+	for _, p := range ports {
+		if len(found.Hidden[p]) == 0 {
+			free = append(free, strconv.Itoa(p))
+		}
+	}
+	if len(free) == 0 {
+		return
+	}
+	which := "port " + free[0]
+	if len(free) > 1 {
+		which = "ports " + strings.Join(free, ", ")
+	}
+	if found.MayMiss {
+		reportf(stderr, "kil: no process found on %s; another user's process is found only with sudo\n", which)
+		return
+	}
+	reportf(stderr, "kil: no process found on %s\n", which)
 }

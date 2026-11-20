@@ -269,3 +269,20 @@ Using fzf is fine, and so is writing it from scratch in Go.
   from `/proc/<pid>/stat`: procps prints it as the clock less the uptime,
   which moved by a second between runs and made the process look like
   another one.
+- `kil :PORT` lists only the processes holding the port, as fkill does, so
+  that `lsof -i :3000` and copying the PID is not needed. Only a listening
+  TCP socket or a UDP one, connected or not, counts, matched by its local
+  port, as kill-port and procs do: matching the remote port too took a
+  browser open on a dev server, and lsof matches either end, so its output
+  is filtered by the local address. The TCP state is read from lsof's
+  output rather than selected with `-sTCP:LISTEN`, which on Linux's lsof
+  also dropped every UDP socket. lsof ends with 1 when any selector matched
+  nothing, as the UDP one for a TCP server does, so that status is not a
+  failure. On Linux kil reads `/proc/net` and `/proc/*/fd`, as
+  fuser, procs, and gopsutil do, since ss and lsof are missing from minimal
+  images such as debian-slim and fedora. On macOS it runs lsof, which ships
+  with it, as gopsutil does; libproc needs cgo or its structures copied,
+  and netstat -anv printed nothing on macOS 27. A port held only by a
+  process kil cannot see is reported with its owner, which `/proc/net`
+  gives, rather than as free. Ports are read after the process list, so
+  that a process that took the port in between is not missing from it.

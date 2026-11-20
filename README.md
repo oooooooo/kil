@@ -25,15 +25,16 @@ go install github.com/oooooooo/kil@latest
 ## Usage
 
 ```sh
-kil               # browse all processes
-kil node          # start with "node" as the initial query
-kil node dev      # arguments are joined into one query: "node dev"
-kil -e node       # exact match: only lines that contain "node"
-kil -s TERM node  # send SIGTERM instead of SIGKILL (also --signal=15)
-kil -- -zsh       # use -- when the query starts with "-"
-kil node -s TERM  # options go first: this searches for "node -s TERM"
-kil --help        # show usage
-kil --version     # show the version
+kil                    # browse all processes
+kil node               # start with "node" as the initial query
+kil node dev           # arguments are joined into one query: "node dev"
+kil -e node            # exact match: only lines that contain "node"
+kil -s TERM node       # send SIGTERM instead of SIGKILL (also --signal=15)
+kil --timeout 5s node  # SIGTERM, then SIGKILL to what is left after 5s
+kil -- -zsh            # use -- when the query starts with "-"
+kil node -s TERM       # options go first: this searches for "node -s TERM"
+kil --help             # show usage
+kil --version          # show the version
 ```
 
 ### Query syntax
@@ -68,7 +69,7 @@ instead. The info line shows `[exact]` in this mode.
 | `Alt-A` | Select every process drawn on screen, or deselect them all if they are all selected already. Matches scrolled off screen are not selected |
 | `Ctrl-X` | Switch between fuzzy and exact matching |
 | `Ctrl-R` | Refresh the process list, keeping your query and selections |
-| `Enter` | Send the signal (`SIGKILL` unless `-s` or `KIL_SIGNAL` chooses another) to the selected processes, or the one under the cursor if none are selected. Only processes on screen are signalled: if some selected ones are off screen, `kil` stays open with them brought on screen, and `Enter` again signals them |
+| `Enter` | Send the signal (`SIGKILL`, or `SIGTERM` with `--timeout`, unless `-s` or `KIL_SIGNAL` chooses another) to the selected processes, or the one under the cursor if none are selected. Only processes on screen are signalled: if some selected ones are off screen, `kil` stays open with them brought on screen, and `Enter` again signals them |
 | `Ctrl-C` / `Esc` | Abort. After `Enter` killed only part of the selection, `Esc` asks before leaving the rest (`Y` / `Enter` to leave, `n` to stay) |
 | `Ctrl-Z` | Suspend `kil` as a shell job; `fg` brings it back. Does nothing when `kil` was not started from a shell, as with `tmux new-session kil` |
 | `Alt-H` | Show every key in place of the list. Any key other than `Ctrl-C` and `Ctrl-Z`, including `Esc`, only closes it |
@@ -84,13 +85,38 @@ Each result is reported as `sent SIGKILL:` (or whichever signal you chose),
 `failed: operation not permitted:` or a `ps` that failed while checking the
 process.
 
+### Waiting with `--timeout`
+
+`kil --timeout 5s` (or `--timeout 5`) waits up to 5 seconds, counted from when
+the picker has ended and kil has sent its signals, for the processes it
+signalled to end, and then sends `SIGKILL` to those still there. The first
+signal is `SIGTERM` unless `-s` or `KIL_SIGNAL` chooses another; signal 0 is
+refused, as it ends nothing.
+
+- Each process is sent `SIGCONT` right after the signal, so that a job
+  suspended with `Ctrl-Z` can act on it, unless the signal chosen stops or
+  continues processes, such as `SIGSTOP`.
+- A process that ends is reported as `exited:` when kil sees it, a zombie
+  included, and one still there after the timeout as
+  `sent SIGKILL after 5s:`.
+- A process whose `ps` line or start time changed while kil waited, as one
+  that ran another program, may no longer be the one you chose, so it is
+  reported as `skipped: process changed, not sent SIGKILL:` and left alone.
+  So is one whose start time kil could not read before the signal, reported
+  as `failed: reading the start time:`.
+- Processes signalled by an `Enter` that left others off screen are waited
+  for too, even if you then leave with `Esc` or `Ctrl-C`.
+- `Ctrl-C`, `SIGINT`, `SIGTERM`, or `SIGQUIT` while kil waits stops it
+  without `SIGKILL`, reporting `skipped: not sent SIGKILL:` for the rest;
+  `SIGHUP` does not.
+
 ### Exit status
 
 | Status | Meaning |
 | --- | --- |
 | `0` | Every selected process was signalled |
-| `1` | Nothing was selected, some processes were skipped or failed, or selected processes were left unsignalled |
-| `2` | Usage error, invalid `-s`, `KIL_SIGNAL`, or `KIL_EXACT`, listing processes failed, or no terminal |
+| `1` | Nothing was selected, some processes were skipped or failed, selected processes were left unsignalled, or, with `--timeout`, a process changed or could not be checked while kil waited |
+| `2` | Usage error, invalid `-s`, `--timeout`, `KIL_SIGNAL`, or `KIL_EXACT`, listing processes failed, or no terminal |
 | `130` | Aborted with `Ctrl-C` / `Esc` |
 | `128`+n | Ended by signal n: `129` for `SIGHUP`, `131` for `SIGQUIT`, `143` for `SIGTERM`. A `SIGINT`, `SIGTERM`, or `SIGQUIT` while `kil` is sending signals stops it, and the processes not reached are reported as `skipped:`; `SIGHUP` does not |
 

@@ -119,7 +119,8 @@ func TestShellChild(t *testing.T) {
 
 // When KIL_TEST_KIL is set, this test is kil, started by TestShellChild, with
 // the arguments in KIL_TEST_ARGS, one per line. It records its PID and exit
-// status, and its reports, in KIL_TEST_DIR.
+// status, and its reports, in KIL_TEST_DIR: stderr goes with stdout unless
+// KIL_TEST_SPLIT is set.
 func TestKilChild(t *testing.T) {
 	if os.Getenv("KIL_TEST_KIL") == "" {
 		t.Skip("run by TestShellChild")
@@ -139,7 +140,13 @@ func TestKilChild(t *testing.T) {
 	if a := os.Getenv("KIL_TEST_ARGS"); a != "" {
 		args = strings.Split(a, "\n")
 	}
-	code := run(args, os.Getenv, stdout, stdout)
+	stderr := stdout
+	if os.Getenv("KIL_TEST_SPLIT") != "" {
+		if stderr, err = os.Create(filepath.Join(dir, "stderr")); err != nil {
+			panic(err)
+		}
+	}
+	code := run(args, os.Getenv, stdout, stderr)
 	write("code", strconv.Itoa(code))
 	os.Exit(code)
 }

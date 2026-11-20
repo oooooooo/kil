@@ -332,3 +332,13 @@ func CurrentAll(pids []int) (map[int]string, error) {
 	}
 	return found, nil
 }
+
+// A State is what kil checks while it waits for a process to end.
+type State struct {
+	// Zombie is set for a process that has ended but not been reaped by
+	// its parent, as ps marks with Z.
+	Zombie bool
+	// Start is when the process started, which tells it from a later
+	// process given the same PID and command line.
+	Start string
+}

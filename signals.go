@@ -156,7 +156,7 @@ func sender(b *batches, sig syscall.Signal, in *interrupts) func([]picker.Item) 
 			}
 			return
 		}
-		b.code = max(b.code, signalAll(batch, sig, b.stdout(), b.stderr(), in))
+		b.code = max(b.code, b.signal(batch, sig, b.stdout(), b.stderr(), in))
 		b.sent += len(batch)
 	}
 }

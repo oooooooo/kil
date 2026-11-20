@@ -10,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/oooooooo/kil/internal/picker"
 	"github.com/oooooooo/kil/internal/proc"
@@ -154,6 +155,73 @@ func TestSignalOptionWithOtherArguments(t *testing.T) {
 	}
 	if got, err := parseArgs([]string{"-s", "TERM", "-h"}); err != nil || !got.help {
 		t.Errorf("parseArgs(-s TERM -h) = %+v, %v; want help", got, err)
+	}
+}
+
+func TestTimeoutOptionIsInTheUsage(t *testing.T) {
+	_, out, _ := runKil(t, nil, "--help")
+	if !strings.Contains(out, "--timeout DUR") {
+		t.Errorf("kil --help = %q; want --timeout DUR listed", out)
+	}
+}
+
+// An invalid --timeout, or one with signal 0, which ends no process, is
+// rejected before the process list is read.
+func TestInvalidTimeoutIsRejectedBeforeListing(t *testing.T) {
+	tests := []struct {
+		env  string
+		args []string
+		want string
+	}{
+		{"", []string{"--timeout"}, "kil: --timeout needs a duration"},
+		{"", []string{"--timeout", "0"}, `kil: --timeout: invalid duration "0"`},
+		{"", []string{"--timeout", "-1s"}, `kil: --timeout: invalid duration "-1s"`},
+		{"", []string{"--timeout", "soon"}, `kil: --timeout: invalid duration "soon"`},
+		{"", []string{"--timeout="}, `kil: --timeout: invalid duration ""`},
+		{"", []string{"--timeout", "-5"}, `kil: --timeout: invalid duration "-5"`},
+		{"", []string{"--timeout", "NaN"}, `kil: --timeout: invalid duration "NaN"`},
+		{"", []string{"--timeout", "Inf"}, `kil: --timeout: invalid duration "Inf"`},
+		{"", []string{"--timeout", "1e30"}, `kil: --timeout: invalid duration "1e30"`},
+		{"", []string{"--timeout", "1e-12"}, `kil: --timeout: invalid duration "1e-12"`},
+		{"", []string{"--timeout", "9999999h"}, `kil: --timeout: invalid duration "9999999h"`},
+		{"", []string{"--timeout", "5s", "-s", "0"}, "kil: --timeout needs a signal that ends processes"},
+		{"0", []string{"--timeout", "5s"}, "kil: --timeout needs a signal that ends processes"},
+	}
+	for _, tt := range tests {
+		runs := fakePS(t)
+		code, _, errOut := runKil(t, map[string]string{"KIL_SIGNAL": tt.env}, tt.args...)
+		if code != exitError || !strings.HasPrefix(errOut, tt.want) {
+			t.Errorf("KIL_SIGNAL=%s kil %q = %d, %q; want %d and an error starting %q", tt.env, tt.args, code, errOut, exitError, tt.want)
+		}
+		if _, err := os.Stat(runs); !os.IsNotExist(err) {
+			t.Errorf("kil %q ran ps before rejecting the option, or its record is unreadable: %v", tt.args, err)
+		}
+	}
+}
+
+func TestTimeoutValues(t *testing.T) {
+	tests := []struct {
+		args  []string
+		want  time.Duration
+		exact bool
+		query string
+	}{
+		{[]string{"--timeout", "5"}, 5 * time.Second, false, ""},
+		{[]string{"--timeout", "1.5", "node"}, 1500 * time.Millisecond, false, "node"},
+		{[]string{"-e", "--timeout", "500ms", "--", "-zsh"}, 500 * time.Millisecond, true, "-zsh"},
+		{[]string{"--timeout=2m", "-s", "TERM", "node", "dev"}, 2 * time.Minute, false, "node dev"},
+	}
+	for _, tt := range tests {
+		got, err := parseArgs(tt.args)
+		if err != nil || got.timeout != tt.want || got.exact != tt.exact || got.query != tt.query {
+			t.Errorf("parseArgs(%q) = %+v, %v; want timeout %v, exact %v, query %q", tt.args, got, err, tt.want, tt.exact, tt.query)
+		}
+	}
+	for _, args := range [][]string{{"node", "--timeout", "5"}, {"--", "--timeout", "5"}} {
+		got, err := parseArgs(args)
+		if err != nil || got.timeout != 0 || !strings.Contains(got.query, "--timeout 5") {
+			t.Errorf("parseArgs(%q) = %+v, %v; want --timeout kept in the query", args, got, err)
+		}
 	}
 }
 
@@ -500,5 +568,35 @@ func TestRunReadsAmbiguousWidthFirst(t *testing.T) {
 	}
 	if width.Ambiguous() != 2 {
 		t.Errorf("Ambiguous() = %d after run with RUNEWIDTH_EASTASIAN=1, want 2", width.Ambiguous())
+	}
+}
+
+// A process with the PID and line of one kil signalled but another start
+// time is a later process given the same PID, so it is reported as changed
+// and not sent SIGKILL. A PID cannot be reused on demand, so ps is replaced.
+func TestTimeoutTellsAReusedPIDByItsStartTime(t *testing.T) {
+	sleeper := exec.Command(os.Args[0], "-test.run=^TestSleeperChild$")
+	sleeper.Env = append(os.Environ(), "KIL_TEST_SLEEPER=1")
+	if err := sleeper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sleeper.Process.Kill(); _ = sleeper.Wait() }()
+	pid := sleeper.Process.Pid
+	line := fmt.Sprintf("%d sleeper", pid)
+	savedLines, savedStates := lookupLines, lookupStates
+	defer func() { lookupLines, lookupStates = savedLines, savedStates }()
+	lookupLines = func([]int) (map[int]string, error) { return map[int]string{pid: line}, nil }
+	lookupStates = func([]int) (map[int]proc.State, error) {
+		return map[int]proc.State{pid: {Start: "later"}}, nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	w := waited{Item: picker.Item{ID: line, Text: line}, pid: pid, start: "earlier"}
+	code := waitAndKill([]waited{w}, 100*time.Millisecond, &stdout, &stderr, nil)
+	if code != exitProblems || stderr.String() != "skipped: process changed, not sent SIGKILL: "+line+"\n" || stdout.String() != "" {
+		t.Errorf("waitAndKill = %d, stdout %q, stderr %q; want the process reported as changed", code, stdout.String(), stderr.String())
+	}
+	if err := sleeper.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Errorf("the process was ended: %v", err)
 	}
 }

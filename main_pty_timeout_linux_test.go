@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/oooooooo/kil/internal/proc"
 )
 
 // When KIL_TEST_RECORDER is set, this test is a process for kil to signal
@@ -744,4 +746,86 @@ esac
 		t.Errorf("exit status %d, want %d", code, exitOK)
 	}
 	checkReports(t, "stdout", k.stdout(), p.pid(), "sent SIGTERM", "sent SIGKILL after 1s")
+}
+
+// A PID reused while kil waits, by a process with the same command line,
+// as a supervisor's restart gives, is told apart by its start time, so the
+// new process is not sent SIGKILL. The test reuses the PID for real: it
+// runs again in a user and PID namespace of its own, where it may set the
+// PID the next process gets.
+func TestTimeoutWithAReusedPID(t *testing.T) {
+	if os.Getenv("KIL_TEST_IN_PIDNS") == "" {
+		if err := exec.Command("unshare", "-Urpf", "--mount-proc", "true").Run(); err != nil {
+			t.Skipf("no user and PID namespaces: %v", err)
+		}
+		cmd := exec.Command("unshare", "-Urpf", "--mount-proc", os.Args[0], "-test.run=^TestTimeoutWithAReusedPID$", "-test.v")
+		cmd.Env = append(os.Environ(), "KIL_TEST_IN_PIDNS=1")
+		out, err := cmd.CombinedOutput()
+		if err != nil || !strings.Contains(string(out), "--- PASS: TestTimeoutWithAReusedPID") {
+			t.Fatalf("in a PID namespace: %v\n%s", err, out)
+		}
+		return
+	}
+
+	tag := fmt.Sprintf("kilreuse%d", time.Now().UnixNano())
+	first := startRecorder(t, tag)
+	pid := first.pid()
+	before, err := proc.CurrentAll([]int{pid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := startKilWith(t, "KIL_SIGNAL=", "--timeout", "3s", tag)
+	k.enter("KILL after 3s")
+	waitUntil(t, "SIGTERM to arrive", func() bool { return len(first.got(t, "SIGTERM")) == 1 })
+
+	// kil is stopped while the PID changes hands, once no ps of its own is
+	// running, so that it does not see the PID free and take the process
+	// as exited, which it is, but which leaves nothing to check.
+	if err := syscall.Kill(k.pid, syscall.SIGSTOP); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "kil to stop with no child", func() bool {
+		children, _ := os.ReadFile(fmt.Sprintf("/proc/%d/task/%d/children", k.pid, k.pid))
+		return procState(k.pid) == "T" && strings.TrimSpace(string(children)) == ""
+	})
+	// The first process ends, and another with its command line takes its
+	// PID.
+	_ = first.cmd.Process.Kill()
+	<-first.exited
+	var second *target
+	for deadline := time.Now().Add(2 * time.Second); second == nil; {
+		if time.Now().After(deadline) {
+			t.Fatalf("could not start a process with PID %d", pid)
+		}
+		if err := os.WriteFile("/proc/sys/kernel/ns_last_pid", []byte(strconv.Itoa(pid-1)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		p := startRecorder(t, tag)
+		if p.pid() == pid {
+			second = p
+			break
+		}
+		_ = p.cmd.Process.Kill()
+		<-p.exited
+	}
+	after, err := proc.CurrentAll([]int{pid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after[pid] != before[pid] {
+		t.Fatalf("the new process's line %q differs from the first's %q; only the start time should", after[pid], before[pid])
+	}
+	if err := syscall.Kill(k.pid, syscall.SIGCONT); err != nil {
+		t.Fatal(err)
+	}
+
+	waitUntil(t, "kil to end", k.ended)
+	if !second.alive() {
+		t.Errorf("the process that reused the PID ended with %v, want it left running", second.cmd.ProcessState)
+	}
+	if code := k.code(); code != exitProblems {
+		t.Errorf("exit status %d, want %d", code, exitProblems)
+	}
+	checkReports(t, "stdout", k.stdout(), pid, "sent SIGTERM")
+	checkReports(t, "stderr", k.stderr(), pid, "skipped: process changed, not sent SIGKILL")
 }

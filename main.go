@@ -365,13 +365,19 @@ type batches struct {
 // continued, so with a timeout each is sent SIGCONT after the signal,
 // as systemd does, unless the signal chosen stops or continues it.
 func (b *batches) signal(targets []picker.Item, sig syscall.Signal, stdout, stderr io.Writer, in *interrupts) int {
+	var before map[string]waited
+	if b.timeout > 0 {
+		before = started(targets)
+	}
 	var sent []picker.Item
 	code := signalTargets(targets, sig, stdout, stderr, in, &sent)
 	if b.timeout > 0 && len(sent) > 0 {
 		if !stopsOrContinues(sig) {
 			continueAll(sent, in)
 		}
-		b.waiting = append(b.waiting, started(sent)...)
+		for _, t := range sent {
+			b.waiting = append(b.waiting, before[t.ID])
+		}
 	}
 	return code
 }
@@ -691,26 +697,29 @@ type waited struct {
 
 const gone = "gone"
 
-// started returns targets, which were all signalled and so have PIDs, with
-// their start times. The times are read right after the signal: before it,
-// they took another ps run for every partial Enter, and a PID reused in the
-// moment between is as unlikely as one reused before the signal's check.
-func started(targets []picker.Item) []waited {
-	ws := make([]waited, len(targets))
-	pids := make([]int, len(targets))
-	for i, t := range targets {
+// started returns the targets that have PIDs, by ID, with their start
+// times. They are read before the signal: read after it, a process that
+// ended on the signal and whose PID a restart with the same command line
+// took meanwhile gave its start time, and so was sent SIGKILL.
+func started(targets []picker.Item) map[string]waited {
+	ws := map[string]waited{}
+	var pids []int
+	for _, t := range targets {
 		var pid int
-		_, _ = fmt.Sscan(t.ID, &pid)
-		ws[i], pids[i] = waited{Item: t, pid: pid, start: gone}, pid
+		if _, err := fmt.Sscan(t.ID, &pid); err == nil && pid > 0 {
+			ws[t.ID] = waited{Item: t, pid: pid, start: gone}
+			pids = append(pids, pid)
+		}
 	}
 	states, err := lookupStates(pids)
-	for i := range ws {
-		switch st, ok := states[ws[i].pid]; {
+	for id, w := range ws {
+		switch st, ok := states[w.pid]; {
 		case err != nil:
-			ws[i].start = ""
+			w.start = ""
 		case ok:
-			ws[i].start = st.Start
+			w.start = st.Start
 		}
+		ws[id] = w
 	}
 	return ws
 }

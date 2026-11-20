@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -661,24 +662,95 @@ func TestPortHeldByAProcessKilCannotSee(t *testing.T) {
 		return port.Result{PIDs: map[int]bool{}, Hidden: map[int][]int{3000: {0}}}, nil
 	}
 	code, _, errOut := runKil(t, nil, ":3000")
-	want := "kil: port 3000 is held by a process of user root, which kil cannot see; try sudo kil :3000\n"
+	want := "kil: port 3000 is held by a process kil cannot see, with a socket of user root; try sudo kil :3000\n"
 	if code != exitProblems || errOut != want {
 		t.Errorf("kil :3000 = %d, %q; want %d and %q", code, errOut, exitProblems, want)
 	}
 }
 
+// When KIL_TEST_SLEEPER is set, this test is a process for kil to signal.
+func TestSleeperChild(t *testing.T) {
+	if os.Getenv("KIL_TEST_SLEEPER") == "" {
+		t.Skip("run by the tests that signal it")
+	}
+	time.Sleep(time.Minute)
+}
+
+// When KIL_TEST_PORTS_CHILD is set, this test runs kil :3000 :5173 with the
+// port lookup replaced as KIL_TEST_PORTS_CHILD names, and writes what kil
+// reported to stderr: "hidden" gives a visible holder of 3000 and a hidden
+// one of 5173; "late" gives a holder that starts after the process list
+// was read, as a server starting as kil does.
+func TestPortsChild(t *testing.T) {
+	mode := os.Getenv("KIL_TEST_PORTS_CHILD")
+	if mode == "" {
+		t.Skip("run by the port tests")
+	}
+	switch mode {
+	case "hidden":
+		findPorts = func([]int) (port.Result, error) {
+			return port.Result{PIDs: map[int]bool{os.Getppid(): true}, Hidden: map[int][]int{5173: {0}}}, nil
+		}
+	case "late":
+		// The holder is started through a shell that exits at once, so
+		// that it is not one of kil's descendants, which kil hides.
+		late := 0
+		findPorts = func([]int) (port.Result, error) {
+			if late == 0 {
+				sh := exec.Command("sh", "-c", `"$0" -test.run='^TestSleeperChild$' >/dev/null 2>&1 & echo $!`, os.Args[0])
+				sh.Env = append(os.Environ(), "KIL_TEST_SLEEPER=1", "KIL_TEST_PORTS_CHILD=")
+				out, err := sh.Output()
+				if err != nil {
+					return port.Result{}, err
+				}
+				if late, err = strconv.Atoi(strings.TrimSpace(string(out))); err != nil {
+					return port.Result{}, err
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			return port.Result{PIDs: map[int]bool{late: true}}, nil
+		}
+		defer func() {
+			if late > 0 {
+				_ = syscall.Kill(late, syscall.SIGKILL)
+			}
+		}()
+	}
+	var stdout bytes.Buffer
+	code := run([]string{":3000", ":5173"}, func(string) string { return "" }, &stdout, os.Stderr)
+	fmt.Fprintf(os.Stderr, "code=%d\n", code)
+}
+
+// runPortsChild runs TestPortsChild in mode in a session of its own, which
+// has no controlling terminal, so that kil cannot open the picker on the
+// terminal go test may run on, and fails at it instead.
+func runPortsChild(t *testing.T, mode string) string {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestPortsChild$")
+	cmd.Env = append(os.Environ(), "KIL_TEST_PORTS_CHILD="+mode)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	_ = cmd.Run()
+	return stderr.String()
+}
+
 // A port held only by an unseen process is reported even when another
 // port given has processes kil lists, before the picker starts.
 func TestHiddenHolderIsReportedBesideVisibleOnes(t *testing.T) {
-	saved := findPorts
-	defer func() { findPorts = saved }()
-	findPorts = func([]int) (port.Result, error) {
-		return port.Result{PIDs: map[int]bool{os.Getppid(): true}, Hidden: map[int][]int{5173: {0}}}, nil
+	out := runPortsChild(t, "hidden")
+	want := "kil: port 5173 is held by a process kil cannot see, with a socket of user root; try sudo kil :5173\n"
+	if !strings.HasPrefix(out, want) || !strings.Contains(out, "no terminal") {
+		t.Errorf("kil :3000 :5173 reported %q; want it to start with %q and go on to the picker", out, want)
 	}
-	_, _, errOut := runKil(t, nil, ":3000", ":5173")
-	want := "kil: port 5173 is held by a process of user root, which kil cannot see; try sudo kil :5173\n"
-	if !strings.HasPrefix(errOut, want) {
-		t.Errorf("kil :3000 :5173 reported %q; want it to start with %q", errOut, want)
+}
+
+// A holder that starts after the process list was read is not missed: kil
+// reads the list again rather than report the port as free.
+func TestPortHolderThatStartsAfterTheList(t *testing.T) {
+	out := runPortsChild(t, "late")
+	if strings.Contains(out, "no process found") || !strings.Contains(out, "no terminal") {
+		t.Errorf("kil :3000 :5173 reported %q; want the late holder listed, so kil goes on to the picker", out)
 	}
 }
 

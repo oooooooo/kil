@@ -7,8 +7,10 @@ package port
 type Result struct {
 	// PIDs are the processes holding the ports.
 	PIDs map[int]bool
-	// Hidden maps a port to the users of sockets on it whose processes kil
-	// could not see, as another user's without root.
+	// Hidden maps a port to the users of sockets on it whose holders kil
+	// could not see, as another user's without root. A socket's user is
+	// the one that made it, which need not be the one that holds it now,
+	// as a worker given a root launcher's socket.
 	Hidden map[int][]int
 	// MayMiss says that other users' processes may be missing without a
 	// trace, where the system does not show their sockets at all.

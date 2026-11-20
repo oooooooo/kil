@@ -272,10 +272,19 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			return nil, err
 		}
 		if len(opts.ports) > 0 {
-			// The ports are read after the listing, so that a process that
-			// took a port meanwhile is not missing from it.
 			if found, err = findPorts(opts.ports); err != nil {
 				return nil, fmt.Errorf("finding the processes on the ports: %w", err)
+			}
+			// A process that took a port after the list was read is
+			// missing from it, so the list is read again, a few times at
+			// most, as processes may keep starting.
+			for range 3 {
+				if !missesAny(procs, found.PIDs) {
+					break
+				}
+				if procs, err = proc.List(os.Getpid()); err != nil {
+					return nil, err
+				}
 			}
 			procs = slices.DeleteFunc(procs, func(p proc.Process) bool { return !found.PIDs[p.PID] })
 		}
@@ -898,11 +907,13 @@ func hiddenOnPorts(ports []int, found port.Result, stderr io.Writer) {
 				names[i] = u.Username
 			}
 		}
-		who := "user " + names[0]
+		// The socket's user made the socket, which a process of another
+		// user may hold now, so it is not named as the holder's.
+		who := "a socket of user " + names[0]
 		if len(names) > 1 {
-			who = "users " + strings.Join(names, ", ")
+			who = "sockets of users " + strings.Join(names, ", ")
 		}
-		reportf(stderr, "kil: port %d is held by a process of %s, which kil cannot see; try sudo kil :%d\n", p, who, p)
+		reportf(stderr, "kil: port %d is held by a process kil cannot see, with %s; try sudo kil :%d\n", p, who, p)
 	}
 }
 
@@ -926,4 +937,18 @@ func nothingOnPorts(ports []int, found port.Result, stderr io.Writer) {
 		return
 	}
 	reportf(stderr, "kil: no process found on %s\n", which)
+}
+
+// missesAny reports whether a PID in pids is not in procs.
+func missesAny(procs []proc.Process, pids map[int]bool) bool {
+	listed := map[int]bool{}
+	for _, p := range procs {
+		listed[p.PID] = true
+	}
+	for pid := range pids {
+		if !listed[pid] && pid != os.Getpid() {
+			return true
+		}
+	}
+	return false
 }

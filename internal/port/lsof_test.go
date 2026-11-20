@@ -58,19 +58,9 @@ func TestLsofHolders(t *testing.T) {
 	defer func() { _ = connected.Close() }()
 	connectedPort := localPort(t, connected.LocalAddr().String())
 
-	// A client that chose its own source port holds that port, but only
-	// as one end of a connection, not as a server on it.
-	source, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sourcePort := localPort(t, source.Addr().String())
-	_ = source.Close()
-	bound, err := (&net.Dialer{LocalAddr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: sourcePort}}).Dial("tcp4", tcp.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = bound.Close() }()
+	// The client to the TCP listener holds its source port, but only as
+	// one end of a connection, not as a server on it.
+	sourcePort := localPort(t, tcpClient.LocalAddr().String())
 
 	got, err := lsofHolders([]int{tcpPort, udpPort, connectedPort, sourcePort})
 	if err != nil {
@@ -100,16 +90,53 @@ func TestLsofHolders(t *testing.T) {
 		t.Errorf("lsofHolders(TCP port only) = %v, %v; want this process", got, err)
 	}
 
-	free, err := net.Listen("tcp4", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	freePort := localPort(t, free.Addr().String())
-	_ = free.Close()
+	freePort := freeTCPAndUDPPort(t)
 	got, err = lsofHolders([]int{freePort})
 	if err != nil || len(got) != 0 {
 		t.Errorf("lsofHolders(free port) = %v, %v; want nothing", got, err)
 	}
+}
+
+// lsof on macOS takes at most 100 -i selectors, two per port, so ports are
+// looked up in batches; a batch that matches nothing does not hide the
+// holders another batch finds.
+func TestLsofHoldersInBatches(t *testing.T) {
+	if _, err := exec.LookPath("lsof"); err != nil {
+		t.Skip("no lsof")
+	}
+	tcp, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tcp.Close() }()
+	saved := lsofBatch
+	defer func() { lsofBatch = saved }()
+	lsofBatch = 1
+	got, err := lsofHolders([]int{freeTCPAndUDPPort(t), localPort(t, tcp.Addr().String())})
+	if err != nil || !slices.ContainsFunc(got, func(h holder) bool { return h.pid == os.Getpid() }) {
+		t.Errorf("lsofHolders in batches of one = %v, %v; want this process", got, err)
+	}
+}
+
+// freeTCPAndUDPPort returns a port that no TCP or UDP socket has: one free
+// for TCP may be taken for UDP.
+func freeTCPAndUDPPort(t *testing.T) int {
+	t.Helper()
+	for range 100 {
+		l, err := net.Listen("tcp4", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		port := localPort(t, l.Addr().String())
+		u, err := net.ListenPacket("udp4", "127.0.0.1:"+strconv.Itoa(port))
+		_ = l.Close()
+		if err == nil {
+			_ = u.Close()
+			return port
+		}
+	}
+	t.Fatal("no port free for both TCP and UDP")
+	return 0
 }
 
 // A missing lsof is an error that names it, not a free port.

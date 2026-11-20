@@ -151,14 +151,6 @@ func TestKilChild(t *testing.T) {
 	os.Exit(code)
 }
 
-// When KIL_TEST_SLEEPER is set, this test is a process for kil to signal.
-func TestSleeperChild(t *testing.T) {
-	if os.Getenv("KIL_TEST_SLEEPER") == "" {
-		t.Skip("run by TestKillingTheShellDoesNotStopTheRest")
-	}
-	time.Sleep(time.Minute)
-}
-
 // ptyKil is kil running on a pseudo-terminal, started from a stand-in shell.
 type ptyKil struct {
 	t      *testing.T

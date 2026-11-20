@@ -28,24 +28,9 @@ func Find(ports []int) (Result, error) {
 	for _, p := range ports {
 		want[p] = true
 	}
-	var all []socket
-	for _, table := range []struct {
-		name string
-		tcp  bool
-	}{{"tcp", true}, {"tcp6", true}, {"udp", false}, {"udp6", false}} {
-		b, err := os.ReadFile("/proc/net/" + table.name)
-		if errors.Is(err, fs.ErrNotExist) {
-			// The kernel has no IPv6.
-			continue
-		}
-		if err != nil {
-			return Result{}, err
-		}
-		found, err := sockets(string(b), table.tcp, want)
-		if err != nil {
-			return Result{}, fmt.Errorf("/proc/net/%s: %w", table.name, err)
-		}
-		all = append(all, found...)
+	all, err := read(want)
+	if err != nil {
+		return Result{}, err
 	}
 	res := Result{PIDs: map[int]bool{}, Hidden: map[int][]int{}}
 	if len(all) == 0 {
@@ -58,12 +43,56 @@ func Find(ports []int) (Result, error) {
 	if err := holders(byInode, res.PIDs); err != nil {
 		return Result{}, err
 	}
+	// A socket closed after the tables were read has no holder left to
+	// find, so the tables are read again before its owner is reported as
+	// hidden.
+	var unfound []socket
 	for _, s := range all {
-		if !byInode[s.inode] && !slices.Contains(res.Hidden[s.port], s.uid) {
+		if !byInode[s.inode] {
+			unfound = append(unfound, s)
+		}
+	}
+	if len(unfound) == 0 {
+		return res, nil
+	}
+	again, err := read(want)
+	if err != nil {
+		return Result{}, err
+	}
+	still := map[uint64]bool{}
+	for _, s := range again {
+		still[s.inode] = true
+	}
+	for _, s := range unfound {
+		if still[s.inode] && !slices.Contains(res.Hidden[s.port], s.uid) {
 			res.Hidden[s.port] = append(res.Hidden[s.port], s.uid)
 		}
 	}
 	return res, nil
+}
+
+// read returns the sockets on the ports in kil's network namespace.
+func read(want map[int]bool) ([]socket, error) {
+	var all []socket
+	for _, table := range []struct {
+		name string
+		tcp  bool
+	}{{"tcp", true}, {"tcp6", true}, {"udp", false}, {"udp6", false}} {
+		b, err := os.ReadFile("/proc/net/" + table.name)
+		if errors.Is(err, fs.ErrNotExist) {
+			// The kernel has no IPv6.
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		found, err := sockets(string(b), table.tcp, want)
+		if err != nil {
+			return nil, fmt.Errorf("/proc/net/%s: %w", table.name, err)
+		}
+		all = append(all, found...)
+	}
+	return all, nil
 }
 
 // sockets returns the sockets in a /proc/net table on the ports: listening

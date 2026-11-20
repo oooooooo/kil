@@ -21,7 +21,24 @@ type holder struct {
 // the local address in its name. The TCP state is read from lsof's output
 // rather than selected with -sTCP:LISTEN, which on Linux's lsof also
 // dropped every UDP socket.
+// lsofBatch is how many ports one lsof run looks up: lsof on macOS takes at
+// most 100 -i selectors, and each port takes two. Tests change it.
+var lsofBatch = 50
+
 func lsofHolders(ports []int) ([]holder, error) {
+	var all []holder
+	for start := 0; start < len(ports); start += lsofBatch {
+		found, err := lsofRun(ports[start:min(start+lsofBatch, len(ports))])
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, found...)
+	}
+	return all, nil
+}
+
+// lsofRun looks the ports up in one lsof run.
+func lsofRun(ports []int) ([]holder, error) {
 	want := map[string]bool{}
 	args := []string{"-nP", "-FpfPnT"}
 	for _, p := range ports {

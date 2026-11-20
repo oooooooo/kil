@@ -275,21 +275,22 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			return nil, err
 		}
 		if len(opts.ports) > 0 {
-			if found, err = findPorts(opts.ports); err != nil {
-				return nil, fmt.Errorf("finding the processes on the ports: %w", err)
-			}
 			// A process that took a port after the list was read is
-			// missing from it, so the list is read again, a few times at
-			// most, as processes may keep starting.
-			for range 3 {
-				if !missesAny(procs, found.PIDs) {
+			// missing from it, so both are read again, a few times at
+			// most, as processes may keep starting. The ports are looked
+			// up again with each list, so that a holder that exited and
+			// whose PID was reused is not taken from an earlier lookup.
+			for attempt := 0; ; attempt++ {
+				if found, err = findPorts(opts.ports); err != nil {
+					return nil, fmt.Errorf("finding the processes on the ports: %w", err)
+				}
+				if unlisted = missesAny(procs, found.PIDs); !unlisted || attempt == 3 {
 					break
 				}
 				if procs, err = proc.List(os.Getpid()); err != nil {
 					return nil, err
 				}
 			}
-			unlisted = missesAny(procs, found.PIDs)
 			procs = slices.DeleteFunc(procs, func(p proc.Process) bool { return !found.PIDs[p.PID] })
 		}
 		items := make([]picker.Item, len(procs))

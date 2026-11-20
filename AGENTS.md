@@ -263,9 +263,11 @@ Using fzf is fine, and so is writing it from scratch in Go.
   for one, rewrites its process title as it shuts down, and a PID can be
   reused, so kil reports the process and leaves it rather than claim it
   ended or kill what may be another process. The pidfd of the first signal
-  is closed before the wait, so the check also compares the start time,
-  read right after the signal, as a supervisor can restart a process with
-  the same command line under a reused PID. On Linux the start time is read
+  is closed before the wait, so the check also compares the start time, as
+  a supervisor can restart a process with the same command line under a
+  reused PID. The start time is read before the signal: read after it, a
+  test that reused the PID in a PID namespace as soon as SIGTERM arrived
+  had its new process sent SIGKILL. On Linux the start time is read
   from `/proc/<pid>/stat`: procps prints it as the clock less the uptime,
   which moved by a second between runs and made the process look like
   another one.

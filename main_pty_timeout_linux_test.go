@@ -710,3 +710,38 @@ func TestTimeoutSkipsWhatWasNotSignalled(t *testing.T) {
 	checkReports(t, "stderr", k.stderr(), gone.pid(), "skipped: process changed or exited")
 	checkReports(t, "stdout", k.stdout(), stays.pid(), "sent SIGTERM", "sent SIGKILL after 1s")
 }
+
+// procps gives a start time that can differ by a second between runs, as it
+// adds the uptime it reads to the clock, so a start time that moves alone
+// must not make kil take a process for another one.
+func TestTimeoutWithAStartTimeThatMoves(t *testing.T) {
+	real, err := exec.LookPath("ps")
+	if err != nil {
+		t.Skip("no ps")
+	}
+	dir := t.TempDir()
+	count := filepath.Join(dir, "count")
+	// The wrapper adds a number of seconds that grows with every run to
+	// the start time, wherever it is asked for.
+	script := `#!/bin/sh
+case "$*" in
+*lstart*)
+	n=$(cat '` + count + `' 2>/dev/null || echo 0); n=$((n + 1)); echo $n > '` + count + `'
+	'` + real + `' "$@" | sed "s/\$/ +$n/" ;;
+*)
+	exec '` + real + `' "$@" ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "ps"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tag := fmt.Sprintf("kilto%d", time.Now().UnixNano())
+	p := startRecorder(t, tag)
+	k := startKil(t, "KIL_SIGNAL=", "KIL_EXACT=1", "KIL_TEST_SPLIT=1", "KIL_TEST_ARGS=--timeout\n1s\n"+tag, "PATH="+dir+":"+os.Getenv("PATH"))
+	k.enter("KILL after 1s")
+	k.waitExit(t, p, 5*time.Second)
+	if code := k.code(); code != exitOK {
+		t.Errorf("exit status %d, want %d", code, exitOK)
+	}
+	checkReports(t, "stdout", k.stdout(), p.pid(), "sent SIGTERM", "sent SIGKILL after 1s")
+}

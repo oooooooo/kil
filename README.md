@@ -20,7 +20,8 @@ cannot see.
 go install github.com/oooooooo/kil@latest
 ```
 
-`kil` runs on Linux and macOS and needs only `ps`.
+`kil` runs on Linux and macOS and needs only `ps`, and on macOS `lsof` for
+`kil :PORT`; both come with the system.
 
 ## Usage
 
@@ -31,6 +32,7 @@ kil node dev           # arguments are joined into one query: "node dev"
 kil -e node            # exact match: only lines that contain "node"
 kil -s TERM node       # send SIGTERM instead of SIGKILL (also --signal=15)
 kil --timeout 5s node  # SIGTERM, then SIGKILL to what is left after 5s
+kil :3000              # only the processes listening on port 3000
 kil -- -zsh            # use -- when the query starts with "-"
 kil node -s TERM       # options go first: this searches for "node -s TERM"
 kil --help             # show usage
@@ -84,6 +86,26 @@ Each result is reported as `sent SIGKILL:` (or whichever signal you chose),
 `skipped:`, or `failed:` with the reason, such as
 `failed: operation not permitted:` or a `ps` that failed while checking the
 process.
+
+### Processes on a port
+
+`kil :3000` lists only the processes holding port 3000: listening on it
+over TCP, IPv4 or IPv6, or bound to it over UDP. Clients connected to the
+port, such as a browser open on a dev server, are not listed. Several ports
+list the processes on any of them, and other words are the query, as in
+`kil :3000 :5173 node`. `Ctrl-R` looks the ports up again. Use `kil --
+:3000` to search for the text `:3000` instead.
+
+- On Linux, kil reads `/proc`, so it needs no other tool. A port held only
+  by another user's process, which kil can see the socket of but not the
+  process without root, is reported as such, with the user the socket
+  belongs to and a hint to use `sudo`.
+  Sockets in another network namespace, as in a container, are not seen.
+- On macOS, kil runs `lsof`, which shows only your own processes unless kil
+  runs as root.
+- A port Docker publishes is held, if by any process kil can see, by
+  `docker-proxy` or Docker Desktop rather than the container's process, so
+  killing it cuts the container off rather than stop it.
 
 ### Waiting with `--timeout`
 

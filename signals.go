@@ -9,6 +9,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/oooooooo/kil/internal/picker"
+	"github.com/oooooooo/kil/internal/port"
 	"github.com/oooooooo/kil/internal/proc"
 	"github.com/oooooooo/kil/internal/signal"
 	"github.com/oooooooo/kil/internal/ui"
@@ -207,3 +208,6 @@ func stopJob() error {
 	<-cont
 	return nil
 }
+
+// findPorts finds the processes on ports. Tests replace it.
+var findPorts = port.Find

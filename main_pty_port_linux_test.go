@@ -432,7 +432,7 @@ func killTagged(t *testing.T, tag string) {
 // process kil cannot see. Outside the namespaces the holder runs as the
 // test's user, which the user namespace maps to root.
 func hiddenHint(port int) string {
-	return fmt.Sprintf("port %d: try sudo; kil cannot see what holds it (socket of root)", port)
+	return fmt.Sprintf("try sudo: kil cannot see what holds port %d (socket of root)", port)
 }
 
 // hiddenReport is what kil reports as it starts of such a port.
@@ -502,6 +502,27 @@ func TestPortHintGoesAfterRefresh(t *testing.T) {
 	}
 }
 
+// With many ports given, each held by a process kil cannot see, and a holder
+// missing from the list, the note still shows both things to do on a terminal
+// of 80 columns, as the port lists come after them and are what gets cut.
+func TestPortHolderMissingActionFitsEightyColumns(t *testing.T) {
+	tag := fmt.Sprintf("kilmiss%d", time.Now().UnixNano())
+	sleeper, _ := startSleeper(t, tag)
+	var ports []string
+	for p := 50000; p < 50012; p++ {
+		ports = append(ports, ":"+strconv.Itoa(p))
+	}
+	k := startKil(t, "KIL_TEST_SPLIT=1", "KIL_TEST_ARGS="+strings.Join(ports, "\n"), "KIL_TEST_PORT_HOLDER="+strconv.Itoa(sleeper.Process.Pid), "KIL_TEST_PORT_HIDDEN=1")
+	k.waitFor(0, strconv.Itoa(sleeper.Process.Pid))
+	from := k.mark()
+	k.send("\x12")
+	k.waitFor(from, "Ctrl-R")
+	// A resize draws the frame whole, at 80 columns.
+	k.redrawn(80, "(0) try sudo, Ctrl-R again: kil cannot see what holds ports 50000")
+	k.send("\x1b")
+	waitUntil(t, "kil to end", k.ended)
+}
+
 // When Ctrl-R finds a process on a port given that is not in the list it
 // read, the picker says so rather than show an empty list with no
 // explanation. Such a race cannot be timed from outside, so the port lookup
@@ -513,7 +534,7 @@ func TestPortHolderMissingAfterRefresh(t *testing.T) {
 	k.waitFor(0, strconv.Itoa(sleeper.Process.Pid))
 	from := k.mark()
 	k.send("\x12")
-	note := "port 3000: Ctrl-R again; a holder was not in the process list"
+	note := "Ctrl-R again: a holder of port 3000 was not in the process list"
 	k.waitFor(from, note)
 	k.redrawn(99, "0/0 (0) "+note)
 	k.send("\x1b")

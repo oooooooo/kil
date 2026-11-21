@@ -827,20 +827,22 @@ func TestPortNote(t *testing.T) {
 	}{
 		{"none", port.Result{Hidden: map[int][]int{}}, false, false, ""},
 		{"one", port.Result{Hidden: map[int][]int{3000: {0}}}, false, false,
-			"port 3000: try sudo; kil cannot see what holds it (socket of root)"},
+			"try sudo: kil cannot see what holds port 3000 (socket of root)"},
 		{"one port, two users", port.Result{Hidden: map[int][]int{3000: {0, 4242424}}}, false, false,
-			"port 3000: try sudo; kil cannot see what holds it (sockets of root, uid 4242424)"},
+			"try sudo: kil cannot see what holds port 3000 (sockets of root, uid 4242424)"},
 		{"two ports, one user", port.Result{Hidden: map[int][]int{3000: {0}, 5173: {0}}}, false, false,
-			"ports 5173, 3000: try sudo; kil cannot see what holds them (sockets of root)"},
+			"try sudo: kil cannot see what holds ports 5173, 3000 (sockets of root)"},
 		{"several", port.Result{Hidden: map[int][]int{5173: {0, 4242424}, 3000: {4242424}}}, false, false,
-			"ports 5173, 3000: try sudo; kil cannot see what holds them (sockets of root, uid 4242424)"},
+			"try sudo: kil cannot see what holds ports 5173, 3000 (sockets of root, uid 4242424)"},
 		{"unlisted", port.Result{Hidden: map[int][]int{}}, true, false,
-			"ports 5173, 3000, 8080: Ctrl-R again; a holder was not in the process list"},
+			"Ctrl-R again: a holder of ports 5173, 3000, 8080 was not in the process list"},
 		{"unlisted and hidden", port.Result{Hidden: map[int][]int{3000: {0}}}, true, false,
-			"port 3000: try sudo; kil cannot see what holds it (socket of root); ports 5173, 3000, 8080: Ctrl-R again; a holder was not in the process list"},
+			"try sudo, Ctrl-R again: kil cannot see what holds port 3000 (socket of root); a holder of ports 5173, 3000, 8080 was not in the process list"},
 		{"may miss, empty", port.Result{MayMiss: true}, false, true,
-			"ports 5173, 3000, 8080: none found; try sudo for other users' processes"},
+			"try sudo: no process kil can see holds ports 5173, 3000, 8080"},
 		{"may miss, some listed", port.Result{MayMiss: true}, false, false, ""},
+		{"may miss, empty, hidden", port.Result{MayMiss: true, Hidden: map[int][]int{3000: {0}}}, false, true,
+			"try sudo: kil cannot see what holds port 3000 (socket of root); no process kil can see holds ports 5173, 8080"},
 		{"may not miss, empty", port.Result{Hidden: map[int][]int{}}, false, true, ""},
 	}
 	for _, tt := range tests {
@@ -854,18 +856,33 @@ func TestPortNote(t *testing.T) {
 }
 
 // What to do fits a terminal of 80 columns beside the info line's counts and
-// [exact], with a 5-digit port and a long user name.
+// [exact], however many 5-digit ports come with it and however long the user
+// name is.
 func TestPortNoteActionFitsEightyColumns(t *testing.T) {
-	notes := map[string]string{
-		"hidden":   portNote([]int{50000}, port.Result{Hidden: map[int][]int{50000: {4242424}}}, false, false),
-		"unlisted": portNote([]int{50000, 50001}, port.Result{}, true, false),
-		"may miss": portNote([]int{50000, 50001}, port.Result{MayMiss: true}, false, true),
+	var many []int
+	hidden := map[int][]int{}
+	for p := 50000; p < 50012; p++ {
+		many = append(many, p)
+		hidden[p] = []int{4242424}
+	}
+	notes := []struct {
+		name, note string
+		actions    []string
+	}{
+		{"hidden", portNote([]int{50000}, port.Result{Hidden: map[int][]int{50000: {4242424}}}, false, false), []string{"try sudo"}},
+		{"hidden, many ports", portNote(many, port.Result{Hidden: hidden}, false, false), []string{"try sudo"}},
+		{"unlisted", portNote([]int{50000, 50001}, port.Result{}, true, false), []string{"Ctrl-R again"}},
+		{"unlisted, many ports", portNote(many, port.Result{}, true, false), []string{"Ctrl-R again"}},
+		{"may miss", portNote([]int{50000, 50001}, port.Result{MayMiss: true}, false, true), []string{"try sudo"}},
+		{"may miss, many ports", portNote(many, port.Result{MayMiss: true}, false, true), []string{"try sudo"}},
+		{"hidden and unlisted, many ports", portNote(many, port.Result{Hidden: hidden}, true, false), []string{"try sudo", "Ctrl-R again"}},
 	}
 	before := len("  123/456 (78) [exact] ")
-	for name, note := range notes {
-		for _, action := range []string{"try sudo", "Ctrl-R again"} {
-			if i := strings.Index(note, action); i >= 0 && before+i+len(action) > 80 {
-				t.Errorf("%s note %q puts %q past column 80", name, note, action)
+	for _, n := range notes {
+		for _, action := range n.actions {
+			i := strings.Index(n.note, action)
+			if i < 0 || before+i+len(action) > 80 {
+				t.Errorf("%s note %q does not show %q within column 80", n.name, n.note, action)
 			}
 		}
 	}

@@ -154,12 +154,21 @@ func TestKilChild(t *testing.T) {
 		// exited after the lookup.
 		holder, _ := strconv.Atoi(pid)
 		calls := 0
-		findPorts = func([]int) (port.Result, error) {
+		// With KIL_TEST_PORT_HIDDEN set, every port is also held by a
+		// process of root that kil cannot see.
+		hide := os.Getenv("KIL_TEST_PORT_HIDDEN") != ""
+		findPorts = func(ports []int) (port.Result, error) {
 			calls++
 			if calls > 1 {
 				holder = 1<<22 + 7
 			}
-			return port.Result{PIDs: map[int]bool{holder: true}}, nil
+			found := port.Result{PIDs: map[int]bool{holder: true}, Hidden: map[int][]int{}}
+			for _, p := range ports {
+				if hide {
+					found.Hidden[p] = []int{0}
+				}
+			}
+			return found, nil
 		}
 	}
 	code := run(args, os.Getenv, stdout, stderr)

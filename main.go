@@ -974,11 +974,18 @@ func portNames(ports []int, names ...string) string {
 }
 
 // portNote tells the picker's info line what the listing of ports leaves
-// out, as kil reports it as it starts, in one line. Each part starts with
-// what to do, so that a narrow terminal cuts the detail rather than that.
-// empty says that nothing on the ports was listed.
+// out, as kil reports it as it starts, in one line. What to do comes first,
+// for every part at once, so that a narrow terminal cuts the details, which
+// list ports, rather than that. empty says that nothing on the ports was
+// listed.
 func portNote(ports []int, found port.Result, unlisted, empty bool) string {
-	var notes []string
+	var actions, details []string
+	add := func(action, detail string) {
+		if !slices.Contains(actions, action) {
+			actions = append(actions, action)
+		}
+		details = append(details, detail)
+	}
 	var held []int
 	var users []string
 	for _, p := range ports {
@@ -996,17 +1003,14 @@ func portNote(ports []int, found port.Result, unlisted, empty bool) string {
 		slices.Sort(users)
 		// One process may hold several ports, so the note does not count
 		// the holders.
-		what, sockets := "it", "socket"
-		if len(held) > 1 {
-			what = "them"
-		}
+		sockets := "socket"
 		if len(held) > 1 || len(users) > 1 {
 			sockets = "sockets"
 		}
-		notes = append(notes, fmt.Sprintf("%s: try sudo; kil cannot see what holds %s (%s of %s)", portNames(held), what, sockets, strings.Join(users, ", ")))
+		add("try sudo", fmt.Sprintf("kil cannot see what holds %s (%s of %s)", portNames(held), sockets, strings.Join(users, ", ")))
 	}
 	if unlisted {
-		notes = append(notes, portNames(ports)+": Ctrl-R again; a holder was not in the process list")
+		add("Ctrl-R again", "a holder of "+portNames(ports)+" was not in the process list")
 	}
 	if empty && !unlisted && found.MayMiss {
 		var free []int
@@ -1016,10 +1020,13 @@ func portNote(ports []int, found port.Result, unlisted, empty bool) string {
 			}
 		}
 		if len(free) > 0 {
-			notes = append(notes, portNames(free)+": none found; try sudo for other users' processes")
+			add("try sudo", "no process kil can see holds "+portNames(free))
 		}
 	}
-	return strings.Join(notes, "; ")
+	if len(actions) == 0 {
+		return ""
+	}
+	return strings.Join(actions, ", ") + ": " + strings.Join(details, "; ")
 }
 
 // userNames names the users uids give, or the uids that have no user.

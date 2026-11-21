@@ -99,7 +99,8 @@ list the processes on any of them, and other words are the query, as in
 - On Linux, kil reads `/proc`, so it needs no other tool. A port held only
   by another user's process, which kil can see the socket of but not the
   process without root, is reported as such, with the user the socket
-  belongs to and a hint to use `sudo`.
+  belongs to and a hint to use `sudo`, and the picker's info line says so
+  too, after each `Ctrl-R` as well.
   Sockets in another network namespace, as in a container, are not seen.
 - On macOS, kil runs `lsof`, which shows only your own processes unless kil
   runs as root.

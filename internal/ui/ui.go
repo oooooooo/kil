@@ -32,8 +32,11 @@ type Model struct {
 	picker    *picker.Picker
 	input     lineInput
 	label     string
-	reload    func() ([]picker.Item, error)
+	reload    func() (Listing, error)
 	reloading bool
+	// note is what the info line says the rows leave out, from the last
+	// listing.
+	note string
 	// help is set while Alt-H's key list is drawn in place of the rows.
 	help    bool
 	width   int
@@ -68,13 +71,20 @@ type Model struct {
 type settledMsg struct{ gen int }
 
 type reloadMsg struct {
-	items []picker.Item
-	err   error
+	listing Listing
+	err     error
+}
+
+// A Listing is what a Ctrl-R reload lists: the rows, and a note for the info
+// line on what they leave out, such as processes kil cannot see, or "".
+type Listing struct {
+	Items []picker.Item
+	Note  string
 }
 
 // New returns a picker over items, filtered by initial. label names the
 // signal Enter sends, and reload lists the processes again for Ctrl-R.
-func New(items []picker.Item, initial, label string, reload func() ([]picker.Item, error)) Model {
+func New(items []picker.Item, initial, label string, reload func() (Listing, error)) Model {
 	input := newLineInput(initial)
 	p := picker.New(items)
 	p.SetQuery(input.String())
@@ -105,6 +115,12 @@ func (m Model) unseen() Model {
 func (m Model) WithExact(exact bool) Model {
 	m.picker.SetExact(exact)
 	return m.unseen()
+}
+
+// WithNote returns m with note on the info line until a reload replaces it.
+func (m Model) WithNote(note string) Model {
+	m.note = note
+	return m
 }
 
 // WithSender returns m with send signalling the selected rows on screen when
@@ -258,7 +274,8 @@ func (m Model) update(msg Msg) (Model, Cmd) {
 			}
 			return m, Quit
 		}
-		m.picker.Reload(msg.items)
+		m.picker.Reload(msg.listing.Items)
+		m.note = msg.listing.Note
 	case KeyPressMsg:
 		return m.handleKey(msg)
 	case PasteMsg:
@@ -350,8 +367,8 @@ func (m Model) handleKey(k KeyPressMsg) (Model, Cmd) {
 		m.reloading = true
 		reload := m.reload
 		return m, func() Msg {
-			items, err := reload()
-			return reloadMsg{items, err}
+			listing, err := reload()
+			return reloadMsg{listing, err}
 		}
 	default:
 		if edit := lineEdit(k); edit != nil {

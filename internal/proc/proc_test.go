@@ -323,6 +323,40 @@ func TestParseReplacesBidiControlsAndSeparators(t *testing.T) {
 	}
 }
 
+// A grapheme cluster of no width on its own, as U+200B ZERO WIDTH SPACE,
+// U+2060 WORD JOINER, U+FEFF, U+00AD SOFT HYPHEN, or combining marks with
+// nothing to combine with, is not drawn, so a command line could look like
+// another one that matching tells apart. Each cluster becomes one "?", and
+// the columns are laid out after, so they line up with other rows and the
+// command name is cut to 16 columns as shown. A combining mark on a letter or
+// a space, the ZWJ in an emoji, and a variation selector keep their cluster
+// a width, so they stay. An invisible character joined to a letter, as
+// U+200C ZERO WIDTH NON-JOINER or a tag character, becomes "?" as well, as it
+// hides in the letter's cluster otherwise.
+func TestParseReplacesZeroWidthClusters(t *testing.T) {
+	listing := "  101     1 alice    \u0301\u0302/bin/zz\u200bq a\u2060b \ufeffc d\u00ade \u200b\u200b e\u0301 \u0301x \U0001F468\u200D\U0001F469 \u2764\uFE0F z\u200cq z\U000E0041q\n" +
+		"  202     1 bob      /bin/b\n"
+	names := "  101     1 abcdefghijklmn\u200bop\n  202     1 abcd\n"
+	got, err := Parse(listing, names)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"101 1 alice abcdefghijklmn?o ?/bin/zz?q a?b ?c d?e ?? e\u0301 \u0301x \U0001F468\u200D\U0001F469 \u2764\uFE0F z?q z?q",
+		"202 1 bob   abcd             /bin/b",
+	}
+	if len(got) != 2 || got[0].Raw != want[0] || got[1].Raw != want[1] {
+		t.Fatalf("Parse() = %+v, want Raw %q", got, want)
+	}
+	if got[0].Frozen != len("101 1 alice abcdefghijklmn?o ") || got[1].Frozen != got[0].Frozen {
+		t.Errorf("Frozen = %d and %d, want both to end before the command line", got[0].Frozen, got[1].Frozen)
+	}
+	wantID := "101\talice\tabcdefghijklmn\u200bop\t\u0301\u0302/bin/zz\u200bq a\u2060b \ufeffc d\u00ade \u200b\u200b e\u0301 \u0301x \U0001F468\u200D\U0001F469 \u2764\uFE0F z\u200cq z\U000E0041q"
+	if got[0].Identity != wantID {
+		t.Errorf("Identity = %q, want %q", got[0].Identity, wantID)
+	}
+}
+
 // A command name with spaces, as an executable named "my sleep" has, is
 // kept whole, and the columns kept on screen end where the command line
 // begins.

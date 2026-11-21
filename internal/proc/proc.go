@@ -173,6 +173,11 @@ func pad(s string, width int) string {
 // kil reports to. Bidirectional controls and the line and paragraph
 // separators, which procps keeps, become "?" too, as they can reorder or
 // break the line on screen so that it reads as another command.
+//
+// What the terminal would not show, as U+200B ZERO WIDTH SPACE, a combining
+// mark with nothing to combine with, or U+200C ZERO WIDTH NON-JOINER after a
+// letter, becomes "?" as well: a command line with one looked like one
+// without it, which matching tells apart.
 func printable(line string) string {
 	var b strings.Builder
 	for _, r := range strings.ToValidUTF8(line, "\uFFFD") {
@@ -181,7 +186,7 @@ func printable(line string) string {
 		}
 		b.WriteRune(r)
 	}
-	return b.String()
+	return termwidth.Reveal(b.String(), "?")
 }
 
 // unsafeOnScreen reports whether r, written to a terminal, could do more

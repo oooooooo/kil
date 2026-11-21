@@ -54,6 +54,9 @@ wait_until() {
 
 shows() { screen | grep -q -- "$1"; }
 
+# The prompt line with its styles, as escape sequences.
+prompt_styled() { tmux capture-pane -e -p -t "$SESSION" | tail -n 1; }
+
 # The queries are typed rather than passed as arguments, so that only the
 # sleeps contain them: kil's process list is taken at start, and the tmux
 # and shell command lines that start kil would otherwise match too. The
@@ -147,8 +150,60 @@ test_alt_a_selects_every_shown_row() {
   echo "ok: Ctrl-A moves to the start of the query and Alt-A selects every shown row"
 }
 
+# A zero-width space in a command line shows as "?", so the row does not look
+# like "zzq", and a query typed as it shows matches it; a zero-width space in
+# the query shows too, as one that matches nothing.
+# U+200B ZERO WIDTH SPACE, written as bytes so that it does not depend on the
+# locale bash runs in.
+ZWSP=$(printf '\xe2\x80\x8b')
+
+test_zero_width_space_shows() {
+  spawn "$ID-zz${ZWSP}q"
+  start_kil
+  type_query "$ID-zz?q"
+
+  local errors=()
+  tmux send-keys -t "$SESSION" C-u
+  tmux send-keys -t "$SESSION" -l "'$ID-zz${ZWSP}q"
+  wait_until shows "^  0/[0-9]* (0) "
+  shows "^> '$ID-zz?q *\$" || errors+=("the zero-width space in the query is not shown")
+  # The placeholder is underlined, as a "?" typed is not.
+  prompt_styled | grep -qE $'zz\e\\[([0-9]*;)*4[;m]' || errors+=("the placeholder in the query is not underlined")
+  type_query "$ID-zz?q"
+  ! prompt_styled | grep -qE $'\e\\[([0-9]*;)*4[;m]' || errors+=("a typed ? in the query is underlined")
+  tmux send-keys -t "$SESSION" Tab
+  wait_until shows "/[0-9]* (1) "
+  finish
+  signalled "$ID-zz?q" || errors+=("the row with a zero-width space was not signalled")
+  check ${errors[@]+"${errors[@]}"}
+  echo "ok: a zero-width space shows as ? in a row and in the query"
+}
+
+# U+200C ZERO WIDTH NON-JOINER joins the letter before it rather than stand on
+# its own, and shows as "?" all the same.
+ZWNJ=$(printf '\xe2\x80\x8c')
+
+test_joined_invisible_shows() {
+  spawn "$ID-zn${ZWNJ}q"
+  start_kil
+  local errors=()
+  tmux send-keys -t "$SESSION" C-u
+  tmux send-keys -t "$SESSION" -l "'$ID-zn${ZWNJ}q"
+  wait_until shows "^  0/[0-9]* (0) "
+  shows "^> '$ID-zn?q *\$" || errors+=("the ZWNJ in the query is not shown")
+  type_query "$ID-zn?q"
+  tmux send-keys -t "$SESSION" Tab
+  wait_until shows "/[0-9]* (1) "
+  finish
+  signalled "$ID-zn?q" || errors+=("the row with a ZWNJ was not signalled")
+  check ${errors[@]+"${errors[@]}"}
+  echo "ok: a ZWNJ shows as ? in a row and in the query"
+}
+
 spawn "$ID-alpha"
 spawn "$ID-beta"
 test_hidden_selection_stays_on_screen
 test_selecting_across_queries
 test_alt_a_selects_every_shown_row
+test_zero_width_space_shows
+test_joined_invisible_shows

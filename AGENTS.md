@@ -226,20 +226,25 @@ Using fzf is fine, and so is writing it from scratch in Go.
   letter, which hides in that letter's cell. A command line with one looked like
   one without it, which matching tells apart, and tag characters could hide any
   ASCII text. Those that change how their cluster is drawn, as UTS #55 asks, are
-  kept: the ZWJ between two emoji, VS15 or VS16 right after an emoji or a keycap
-  base, a selector of an ideographic variant right after an ideograph, and the
-  tags of the three flags Unicode recommends. Any other tags after U+1F3F4 draw
-  as the black flag alone, so they could hide text, and any other variation
-  selector varies nothing. A ZWJ between two emoji is kept even where Unicode
+  kept: the ZWJ between two emoji, VS15 or VS16 right after an emoji or between
+  a keycap base and U+20E3, a selector of an ideographic variant right after an
+  ideograph, and the tags of the three flags Unicode recommends. Any other tags
+  after U+1F3F4 draw as the black flag alone, so they could hide text, and any
+  other variation selector varies nothing: one kept before another selector in a
+  keycap no longer joined U+20E3 once that selector showed as `?`, so reading
+  the line again showed it otherwise. Marks that start a cluster, and that only
+  a spacing mark after a character shown as `?` gave a width, become `?` as
+  well, for the same reason. A ZWJ between two emoji is kept even where Unicode
   recommends no such sequence and a terminal draws the two apart, as telling
   them apart needs Unicode's list of sequences. In the query, a cluster with
   marks is laid out a cell at a time, so that one wider than the prompt is cut
   at its edge rather than leave it, and the caret's cluster is laid out before
   the text before it. A ZWNJ in Persian, a ZWJ in Devanagari, and a Mongolian
   variation selector show as `?`, as they cannot be told from ones that hide.
-  Reveal finds a keycap and a flag once for each cluster: found at each
-  character, a cluster of the variation selectors an argument can hold took
-  seconds. ps, fzf, htop, and procs send such characters as they are; vim shows
+  Reveal checks a keycap's selector against its neighbours alone and finds a
+  flag once for each cluster: searching the cluster at each character, as it
+  once did for a keycap, took seconds on the variation selectors an argument can
+  hold. ps, fzf, htop, and procs send such characters as they are; vim shows
   them as `<200b>`. kil matches the line as shown, so `zz?q` typed matches such
   a line, and a query with U+200B matches no ps line. uniseg does not export
   Extended_Pictographic, so kil asks it whether a character joins an emoji after

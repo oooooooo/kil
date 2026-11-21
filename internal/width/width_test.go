@@ -1,6 +1,7 @@
 package width
 
 import (
+	"math/rand/v2"
 	"strings"
 	"testing"
 	"time"
@@ -87,12 +88,25 @@ func TestReveal(t *testing.T) {
 		// selectors of their standardized and ideographic variants.
 		{"\U0001F600\uFE00", "\U0001F600?"},
 		{"1\uFE00\u20E3", "1?\u20E3"},
+		// A keycap's selector shows only between its base and U+20E3: any
+		// other varies nothing, and the one before it, kept, would no longer
+		// share a cluster with U+20E3 once that one is shown as "?".
+		{"1\uFE0F\uFE0F\u20E3", "1??\u20E3"},
+		{"1\uFE0E\uFE0F\u20E3", "1??\u20E3"},
+		{"#\uFE0F\u20E3\uFE0F", "#\uFE0F\u20E3?"},
 		{"\U0001F600\U000E0100", "\U0001F600?"},
 		{"\u845B\uFE0F", "\u845B?"},
 		// A ZWJ after a mark joins nothing that shows, so it is marked too.
 		{"\U0001F600\u200C\u200D\U0001F600", "\U0001F600??\U0001F600"},
 		{"\u00A9\U000E0041\u200D\u00A9", "\u00A9??\u00A9"},
 		{"\U0001F3F4" + tags("gbsct") + "\U000E007F\u200D\U0001F600", "\U0001F3F4???????\U0001F600"},
+		// Marks at the start that only a spacing mark after an invisible
+		// character gave a width have nothing to combine with once that
+		// character is a "?", so they are one too, as without it.
+		{"\u0301\u200C\u0E33", "??\u0E33"},
+		{"\u0301\u0302\u200C\u093F", "??\u093F"},
+		{"\u20E3\uFE0F\u0E33", "??\u0E33"},
+		{"\U0001F3FB\u200D\u0E33", "??\u0E33"},
 	}
 	for _, tt := range tests {
 		got := Reveal(tt.in, "?")
@@ -102,6 +116,39 @@ func TestReveal(t *testing.T) {
 		// What Reveal returns has nothing left to reveal.
 		if again := Reveal(got, "?"); again != got {
 			t.Errorf("Reveal(Reveal(%+q)) = %+q, want %+q", tt.in, again, got)
+		}
+	}
+}
+
+// What Reveal returns has nothing left to reveal and no cluster of no width,
+// whatever the characters a ps line field starts with or holds.
+func TestRevealIsIdempotent(t *testing.T) {
+	runes := []rune{
+		'a', '1', '#', ' ', '\u0301', '\u0302', '\u093F', '\u0E33', '\u200B', '\u200C', '\u200D',
+		'\u20E3', '\uFE0E', '\uFE0F', '\uFE00', 0xE0100, 0xE0041, 0xE007F, '\u2764', 0x1F600,
+		0x1F3FB, 0x1F3F4, 0x1F1EF, 0x1F1F5, '\u845B', '\u1100', '\u1161', '\u11A8', '\u115F',
+		'\u3164', '\u00AD', '\u0600', '\u034F', '\u2060', '\u0915', '\u094D',
+	}
+	rnd := rand.New(rand.NewPCG(1, 2))
+	for range 300000 {
+		var b strings.Builder
+		for range 1 + rnd.IntN(6) {
+			b.WriteRune(runes[rnd.IntN(len(runes))])
+		}
+		for _, in := range []string{b.String(), "pid " + b.String()} {
+			got := Reveal(in, "?")
+			if again := Reveal(got, "?"); again != got {
+				t.Fatalf("Reveal(Reveal(%+q)) = %+q, want %+q", in, again, got)
+			}
+			rest, state := got, -1
+			for rest != "" {
+				var c string
+				var w int
+				c, rest, w, state = uniseg.FirstGraphemeClusterInString(rest, state)
+				if w == 0 {
+					t.Fatalf("Reveal(%+q) = %+q, which has the cluster %+q of no width", in, got, c)
+				}
+			}
 		}
 	}
 }

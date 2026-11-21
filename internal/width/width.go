@@ -8,7 +8,6 @@
 package width
 
 import (
-	"slices"
 	"strings"
 	"unicode"
 
@@ -100,15 +99,17 @@ func RevealEach(s string, each func(text string, marked bool)) {
 			continue
 		}
 		rs := []rune(cluster)
-		keycap := slices.Contains(rs, '\u20E3')
 		flag := flagTags(rs)
 		marked, from := false, 0
 		for i, r := range rs {
 			// A ZWJ after any mark in its cluster is marked too: what it
 			// joins to the emoji after it no longer shows as it did.
-			if ignorable(r) && (marked && r == '\u200D' || !drawsWith(rs, i, keycap, flag)) {
+			if ignorable(r) && (marked && r == '\u200D' || !drawsWith(rs, i, flag)) {
 				if from < i {
-					each(string(rs[from:i]), false)
+					// Marks that start the cluster combine with nothing
+					// once r is shown as mark.
+					piece := string(rs[from:i])
+					each(piece, from == 0 && uniseg.StringWidth(piece) == 0)
 				}
 				each(string(r), true)
 				marked, from = true, i+1
@@ -142,11 +143,11 @@ func ignorable(r rune) bool {
 
 // drawsWith reports whether the ignorable rs[i] changes how its cluster rs is
 // drawn: the ZWJ between two emoji, VS15 or VS16 right after an emoji or a
-// keycap base, a variation selector of an ideographic variant right after an
-// ideograph, and the tag characters of a flag.
-// keycap says rs ends a keycap, and flag that rs is a flag's tag sequence,
-// which Reveal finds once for the cluster rather than at each character.
-func drawsWith(rs []rune, i int, keycap, flag bool) bool {
+// keycap base and before U+20E3, a variation selector of an ideographic
+// variant right after an ideograph, and the tag characters of a flag.
+// flag says that rs is a flag's tag sequence, which Reveal finds once for the
+// cluster rather than at each character.
+func drawsWith(rs []rune, i int, flag bool) bool {
 	r := rs[i]
 	switch {
 	case r == '\u200D':
@@ -159,7 +160,8 @@ func drawsWith(rs []rune, i int, keycap, flag bool) bool {
 		// selectors of their standardized and ideographic variants.
 		prev := rs[i-1]
 		if r == '\uFE0E' || r == '\uFE0F' {
-			return pictographic(prev) || (keycap && strings.ContainsRune("0123456789#*", prev))
+			keycap := i+1 < len(rs) && rs[i+1] == '\u20E3' && strings.ContainsRune("0123456789#*", prev)
+			return pictographic(prev) || keycap
 		}
 		return unicode.Is(unicode.Ideographic, prev) && (r <= '\uFE02' || r >= 0xE0100)
 	case r >= 0xE0020 && r <= 0xE007F:

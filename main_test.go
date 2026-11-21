@@ -486,7 +486,7 @@ func TestPickerFailureKeepsEarlierReports(t *testing.T) {
 // After a partial Enter some processes were signalled, so the failure must
 // not claim that nothing was.
 func TestFailureAfterAPartialEnterDoesNotClaimNothingWasSignalled(t *testing.T) {
-	reload := func() ([]picker.Item, error) { return nil, errors.New("ps failed") }
+	reload := func() (ui.Listing, error) { return ui.Listing{}, errors.New("ps failed") }
 	var its []picker.Item
 	for i := range 30 {
 		line := fmt.Sprintf("%03d proc", 100+i)
@@ -808,5 +808,65 @@ func TestTimeoutWithoutAStartTime(t *testing.T) {
 	}
 	if err := sleeper.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Errorf("the process was ended: %v", err)
+	}
+}
+
+// The picker's note on a listing of ports says what it leaves out, as kil
+// reports as it starts: ports held by processes kil cannot see, in the order
+// given, with the users of their sockets; a process found on a port but
+// missing from the list; and, where other users' processes are not found
+// without root, an empty listing. Each part starts with what to do, so that
+// a narrow terminal cuts the detail rather than that.
+func TestPortNote(t *testing.T) {
+	tests := []struct {
+		name     string
+		found    port.Result
+		unlisted bool
+		empty    bool
+		want     string
+	}{
+		{"none", port.Result{Hidden: map[int][]int{}}, false, false, ""},
+		{"one", port.Result{Hidden: map[int][]int{3000: {0}}}, false, false,
+			"port 3000: try sudo; kil cannot see what holds it (socket of root)"},
+		{"one port, two users", port.Result{Hidden: map[int][]int{3000: {0, 4242424}}}, false, false,
+			"port 3000: try sudo; kil cannot see what holds it (sockets of root, uid 4242424)"},
+		{"two ports, one user", port.Result{Hidden: map[int][]int{3000: {0}, 5173: {0}}}, false, false,
+			"ports 5173, 3000: try sudo; kil cannot see what holds them (sockets of root)"},
+		{"several", port.Result{Hidden: map[int][]int{5173: {0, 4242424}, 3000: {4242424}}}, false, false,
+			"ports 5173, 3000: try sudo; kil cannot see what holds them (sockets of root, uid 4242424)"},
+		{"unlisted", port.Result{Hidden: map[int][]int{}}, true, false,
+			"ports 5173, 3000, 8080: Ctrl-R again; a holder was not in the process list"},
+		{"unlisted and hidden", port.Result{Hidden: map[int][]int{3000: {0}}}, true, false,
+			"port 3000: try sudo; kil cannot see what holds it (socket of root); ports 5173, 3000, 8080: Ctrl-R again; a holder was not in the process list"},
+		{"may miss, empty", port.Result{MayMiss: true}, false, true,
+			"ports 5173, 3000, 8080: none found; try sudo for other users' processes"},
+		{"may miss, some listed", port.Result{MayMiss: true}, false, false, ""},
+		{"may not miss, empty", port.Result{Hidden: map[int][]int{}}, false, true, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := portNote([]int{5173, 3000, 8080}, tt.found, tt.unlisted, tt.empty)
+			if got != tt.want {
+				t.Errorf("portNote = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// What to do fits a terminal of 80 columns beside the info line's counts and
+// [exact], with a 5-digit port and a long user name.
+func TestPortNoteActionFitsEightyColumns(t *testing.T) {
+	notes := map[string]string{
+		"hidden":   portNote([]int{50000}, port.Result{Hidden: map[int][]int{50000: {4242424}}}, false, false),
+		"unlisted": portNote([]int{50000, 50001}, port.Result{}, true, false),
+		"may miss": portNote([]int{50000, 50001}, port.Result{MayMiss: true}, false, true),
+	}
+	before := len("  123/456 (78) [exact] ")
+	for name, note := range notes {
+		for _, action := range []string{"try sudo", "Ctrl-R again"} {
+			if i := strings.Index(note, action); i >= 0 && before+i+len(action) > 80 {
+				t.Errorf("%s note %q puts %q past column 80", name, note, action)
+			}
+		}
 	}
 }

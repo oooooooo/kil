@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/oooooooo/kil/internal/port"
 )
 
 // openPTY returns a new pseudo-terminal pair.
@@ -146,6 +148,20 @@ func TestKilChild(t *testing.T) {
 			panic(err)
 		}
 	}
+	if pid := os.Getenv("KIL_TEST_PORT_HOLDER"); pid != "" {
+		// The port lookup finds the process KIL_TEST_PORT_HOLDER names
+		// at first and then a PID that no process has, as a holder that
+		// exited after the lookup.
+		holder, _ := strconv.Atoi(pid)
+		calls := 0
+		findPorts = func([]int) (port.Result, error) {
+			calls++
+			if calls > 1 {
+				holder = 1<<22 + 7
+			}
+			return port.Result{PIDs: map[int]bool{holder: true}}, nil
+		}
+	}
 	code := run(args, os.Getenv, stdout, stderr)
 	write("code", strconv.Itoa(code))
 	os.Exit(code)
@@ -186,6 +202,18 @@ func startKilAlone(t *testing.T, env ...string) *ptyKil {
 
 func launch(t *testing.T, withShell bool, env []string) *ptyKil {
 	t.Helper()
+	shell := exec.Command(os.Args[0], "-test.run=^TestShellChild$", "kilshell-")
+	shell.Env = append(os.Environ(), "KIL_TEST_SHELL=1")
+	if !withShell {
+		shell = exec.Command(os.Args[0], "-test.run=^TestKilChild$")
+		shell.Env = append(os.Environ(), "KIL_TEST_KIL=1")
+	}
+	return launchCmd(t, shell, env)
+}
+
+// launchCmd starts kil on a 100x24 terminal through shell, which runs it.
+func launchCmd(t *testing.T, shell *exec.Cmd, env []string) *ptyKil {
+	t.Helper()
 	master, slave := openPTY(t)
 	if err := unix.IoctlSetWinsize(int(master.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 24, Col: 100}); err != nil {
 		t.Fatal(err)
@@ -196,12 +224,10 @@ func launch(t *testing.T, withShell bool, env []string) *ptyKil {
 	}
 	dir := t.TempDir()
 	k := &ptyKil{t: t, master: master, dir: dir, tag: fmt.Sprintf("kiltest%d", time.Now().UnixNano()), initial: initial}
+	k.shell = shell
 	// The tag names the shell in the process list.
-	k.shell = exec.Command(os.Args[0], "-test.run=^TestShellChild$", "kilshell-"+k.tag)
-	k.shell.Env = append(os.Environ(), "KIL_TEST_SHELL=1")
-	if !withShell {
-		k.shell = exec.Command(os.Args[0], "-test.run=^TestKilChild$")
-		k.shell.Env = append(os.Environ(), "KIL_TEST_KIL=1")
+	if last := len(shell.Args) - 1; shell.Args[last] == "kilshell-" {
+		shell.Args[last] += k.tag
 	}
 	k.shell.Env = append(k.shell.Env, "KIL_TEST_DIR="+dir, "TERM=xterm-256color", "KIL_SIGNAL=0", "KIL_EXACT=")
 	k.shell.Env = append(k.shell.Env, env...)

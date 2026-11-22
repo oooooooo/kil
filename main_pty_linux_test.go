@@ -284,6 +284,33 @@ func (k *ptyKil) stop() {
 	_ = k.master.Close()
 }
 
+// frameShows waits until a whole frame of kil's screen has s, as text. tcell writes
+// only the cells that change, so each try resizes the terminal, which makes
+// kil draw every cell again, and reads that frame.
+func (k *ptyKil) frameShows(s string) {
+	k.t.Helper()
+	cols := uint16(100)
+	k.eventually(fmt.Sprintf("%q in a frame", s), func() bool {
+		cols = 199 - cols // 99 and 100 in turn
+		from := k.mark()
+		if err := unix.IoctlSetWinsize(int(k.master.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 24, Col: cols}); err != nil {
+			k.t.Fatal(err)
+		}
+		// The frame may come in pieces, so its output is read until it has
+		// s or a second has passed, and the next try draws it again.
+		for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			if strings.Contains(escapes.ReplaceAllString(k.output(from), ""), s) {
+				return true
+			}
+		}
+		return false
+	})
+}
+
+// escapes matches the escape sequences tcell writes, which part the text of
+// a row where its colors change.
+var escapes = regexp.MustCompile(`\x1b(\[[0-9;?>=]*[a-zA-Z]|[()][0-9A-Z]|[=>])`)
+
 func (k *ptyKil) eventually(what string, ok func() bool) {
 	k.t.Helper()
 	for deadline := time.Now().Add(5 * time.Second); !ok(); {
@@ -444,14 +471,20 @@ func TestKillingTheShellDoesNotStopTheRest(t *testing.T) {
 	})
 
 	// The shell is selected first, so it is signalled first. The process
-	// list is read again so that it has the sleeper.
+	// list is read again so that it has the sleeper. Each key waits for
+	// the screen to show what the one before did: on a loaded machine the
+	// reload took longer than a fixed pause, so Alt-A found no sleeper or
+	// Enter came while the reload ran, which ignores it.
 	k.send("\x12")
-	time.Sleep(500 * time.Millisecond)
 	k.send("kilshell-" + k.tag)
-	time.Sleep(500 * time.Millisecond)
-	k.send("\t\x15kilsleep-" + k.tag)
-	time.Sleep(500 * time.Millisecond)
+	k.frameShows("Child$ kilshell-" + k.tag)
+	k.send("\t")
+	k.frameShows(" (1) ")
+	k.send("\x15kilsleep-" + k.tag)
+	k.frameShows("Child$ kilsleep-" + k.tag)
 	k.send("\x1ba")
+	k.frameShows(" (2) ")
+	// Enter waits for rows that have just come on screen.
 	time.Sleep(500 * time.Millisecond)
 	k.send("\r")
 

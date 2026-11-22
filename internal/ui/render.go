@@ -380,6 +380,15 @@ func (m Model) infoLine(shown int) string {
 	if m.sent > 0 {
 		info += fmt.Sprintf(" sent %d, %d selected left: Enter to send", m.sent, m.picker.SelectedCount())
 	}
+	// The note comes last, as what comes before it tells what Enter does.
+	if m.note != "" {
+		info += " " + strings.Map(func(r rune) rune {
+			if unsafeOnScreen(r) || r == utf8.RuneError {
+				return '?'
+			}
+			return r
+		}, m.note)
+	}
 	// As in fzf, the rule stops one column short of the edge.
 	rule := m.width - 2 - columns(info) - 2
 	return "  " + fg(colorInfo) + info + reset + " " + fg(colorBorder) + repeatTo("─", rule) + reset

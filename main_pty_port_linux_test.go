@@ -12,6 +12,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // When KIL_TEST_LISTEN is set, this test is a process that holds a socket:
@@ -356,4 +358,185 @@ func runKilProcess(t *testing.T, args ...string) (int, string, string) {
 		t.Fatalf("kil did not record its status: %v", err)
 	}
 	return code, read("stdout"), read("stderr")
+}
+
+// startKilInNamespaces starts kil :PORT... on a terminal in user and PID
+// namespaces of its own, beside a process holding a TCP socket on addr
+// started in them and named by tag. A process outside the namespaces holds
+// sockets kil finds in /proc/net but cannot see, as another user's process
+// is to kil without root, which a test cannot start without root.
+func startKilInNamespaces(t *testing.T, tag, addr string, ports ...int) *ptyKil {
+	t.Helper()
+	if err := exec.Command("unshare", "-Urpf", "--mount-proc", "true").Run(); err != nil {
+		t.Skipf("user and PID namespaces are not available: %v", err)
+	}
+	args := make([]string, len(ports))
+	for i, p := range ports {
+		args[i] = ":" + strconv.Itoa(p)
+	}
+	// sh stays as the namespaces' init, so that the holder is not one of
+	// kil's descendants, which kil hides, and --kill-child ends all of
+	// them with the test.
+	shell := exec.Command("unshare", "-Urpf", "--kill-child", "--mount-proc", "sh", "-c",
+		// kil starts once the holder listens, so that its first listing
+		// has it.
+		`"$0" -test.run='^TestListenerChild$' "$1" &
+		until [ -s "$KIL_TEST_PORTFILE" ]; do sleep 0.05; done
+		"$0" -test.run='^TestKilChild$'`, os.Args[0], tag)
+	shell.Env = append(os.Environ(), "KIL_TEST_KIL=1",
+		"KIL_TEST_LISTEN=tcp4", "KIL_TEST_ADDR="+addr, "KIL_TEST_PORTFILE="+filepath.Join(t.TempDir(), "port"))
+	return launchCmd(t, shell, []string{"KIL_TEST_SPLIT=1", "KIL_TEST_ARGS=" + strings.Join(args, "\n")})
+}
+
+// freePort returns a TCP port nothing listens on.
+func freePort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = l.Close() }()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
+// killTagged ends the holder started in kil's namespaces as tag, found from
+// outside them, and waits for it to be gone. unshare and sh have tag in
+// their command lines too, and ending them would end kil.
+func killTagged(t *testing.T, tag string) {
+	t.Helper()
+	pid := 0
+	waitUntil(t, "the process tagged "+tag, func() bool {
+		dirs, _ := os.ReadDir("/proc")
+		for _, d := range dirs {
+			n, err := strconv.Atoi(d.Name())
+			if err != nil {
+				continue
+			}
+			b, _ := os.ReadFile(filepath.Join("/proc", d.Name(), "cmdline"))
+			args := strings.Split(string(b), "\x00")
+			if slices.Contains(args, tag) && slices.Contains(args, "-test.run=^TestListenerChild$") {
+				pid = n
+				return true
+			}
+		}
+		return false
+	})
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	waitUntil(t, "the process tagged "+tag+" to end", func() bool {
+		b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+		return err != nil || strings.Contains(string(b), ") Z ")
+	})
+}
+
+// hiddenHint is what the picker's info line says of a port held by a
+// process kil cannot see. Outside the namespaces the holder runs as the
+// test's user, which the user namespace maps to root.
+func hiddenHint(port int) string {
+	return fmt.Sprintf("try sudo: kil cannot see what holds port %d (socket of root)", port)
+}
+
+// hiddenReport is what kil reports as it starts of such a port.
+func hiddenReport(port int) string {
+	return fmt.Sprintf("kil: port %d is held by a process kil cannot see, with a socket of user root; try sudo kil :%d\n", port, port)
+}
+
+// redrawn resizes kil's terminal, which makes kil draw the whole screen
+// again, and returns where that frame starts in the output, once its info
+// line, which has want, is drawn.
+func (k *ptyKil) redrawn(cols uint16, want string) int {
+	k.t.Helper()
+	from := k.mark()
+	if err := unix.IoctlSetWinsize(int(k.master.Fd()), unix.TIOCSWINSZ, &unix.Winsize{Row: 24, Col: cols}); err != nil {
+		k.t.Fatal(err)
+	}
+	k.waitFor(from, want)
+	return from
+}
+
+// When Ctrl-R finds a port given now held only by a process kil cannot
+// see, the picker says so, with the hint kil gives as it starts, rather
+// than show an empty list with no explanation.
+func TestPortHintAfterRefresh(t *testing.T) {
+	tag := fmt.Sprintf("kilhint%d", time.Now().UnixNano())
+	port := freePort(t)
+	k := startKilInNamespaces(t, tag, "127.0.0.1:"+strconv.Itoa(port), port)
+	k.waitFor(0, "TestListenerChild")
+	killTagged(t, tag)
+	startListener(t, tag+"outside", "tcp4", "127.0.0.1:"+strconv.Itoa(port))
+	from := k.mark()
+	k.send("\x12")
+	// tcell writes only the cells that change, so the frame is read whole
+	// once it is drawn again.
+	k.waitFor(from, hiddenHint(port))
+	k.redrawn(99, "0/0 (0) "+hiddenHint(port))
+	k.send("\x1b")
+	waitUntil(t, "kil to end", k.ended)
+}
+
+// The hint kil gives as it starts is also on the picker's info line, as the
+// picker covers what kil wrote before it, and Ctrl-R takes it away once the
+// port's holder is gone.
+func TestPortHintGoesAfterRefresh(t *testing.T) {
+	tag := fmt.Sprintf("kilhint%d", time.Now().UnixNano())
+	shown := freePort(t)
+	outside, hidden := startListener(t, tag+"outside", "tcp4", "127.0.0.1:0")
+	k := startKilInNamespaces(t, tag, "127.0.0.1:"+strconv.Itoa(shown), shown, hidden)
+	k.waitFor(0, "TestListenerChild")
+	k.redrawn(99, "1/1 (0) "+hiddenHint(hidden))
+	_ = outside.cmd.Process.Kill()
+	<-outside.exited
+	from := k.mark()
+	k.send("\x12")
+	// The rule is drawn where the hint was once the reload is shown.
+	k.waitFor(from, "───")
+	from = k.redrawn(98, "1/1 (0)")
+	time.Sleep(200 * time.Millisecond)
+	if out := k.output(from); strings.Contains(out, "cannot see") {
+		t.Errorf("the hint is still on the screen after Ctrl-R:\n%q", out)
+	}
+	k.waitFor(from, "TestListenerChild")
+	k.send("\x1b")
+	waitUntil(t, "kil to end", k.ended)
+	if !strings.Contains(k.stderr(), hiddenReport(hidden)) {
+		t.Errorf("stderr = %q, want the hint given as kil started", k.stderr())
+	}
+}
+
+// With many ports given, each held by a process kil cannot see, and a holder
+// missing from the list, the note still shows both things to do on a terminal
+// of 80 columns, as the port lists come after them and are what gets cut.
+func TestPortHolderMissingActionFitsEightyColumns(t *testing.T) {
+	tag := fmt.Sprintf("kilmiss%d", time.Now().UnixNano())
+	sleeper, _ := startSleeper(t, tag)
+	var ports []string
+	for p := 50000; p < 50012; p++ {
+		ports = append(ports, ":"+strconv.Itoa(p))
+	}
+	k := startKil(t, "KIL_TEST_SPLIT=1", "KIL_TEST_ARGS="+strings.Join(ports, "\n"), "KIL_TEST_PORT_HOLDER="+strconv.Itoa(sleeper.Process.Pid), "KIL_TEST_PORT_HIDDEN=1")
+	k.waitFor(0, strconv.Itoa(sleeper.Process.Pid))
+	from := k.mark()
+	k.send("\x12")
+	k.waitFor(from, "Ctrl-R")
+	// A resize draws the frame whole, at 80 columns.
+	k.redrawn(80, "(0) try sudo, Ctrl-R again: kil cannot see what holds ports 50000")
+	k.send("\x1b")
+	waitUntil(t, "kil to end", k.ended)
+}
+
+// When Ctrl-R finds a process on a port given that is not in the list it
+// read, the picker says so rather than show an empty list with no
+// explanation. Such a race cannot be timed from outside, so the port lookup
+// is replaced; the listing and the picker are kil's own.
+func TestPortHolderMissingAfterRefresh(t *testing.T) {
+	tag := fmt.Sprintf("kilmiss%d", time.Now().UnixNano())
+	sleeper, _ := startSleeper(t, tag)
+	k := startKil(t, "KIL_TEST_SPLIT=1", "KIL_TEST_ARGS=:3000", "KIL_TEST_PORT_HOLDER="+strconv.Itoa(sleeper.Process.Pid))
+	k.waitFor(0, strconv.Itoa(sleeper.Process.Pid))
+	from := k.mark()
+	k.send("\x12")
+	note := "Ctrl-R again: a holder of port 3000 was not in the process list"
+	k.waitFor(from, note)
+	k.redrawn(99, "0/0 (0) "+note)
+	k.send("\x1b")
+	waitUntil(t, "kil to end", k.ended)
 }

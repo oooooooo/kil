@@ -265,14 +265,13 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		label += fmt.Sprintf(" (KILL after %v)", opts.timeout)
 	}
 
-	var found port.Result
-	// unlisted says that a holder found on the ports was still missing from
-	// the process list after it was read again.
-	unlisted := false
-	list := func() ([]picker.Item, error) {
+	// lookup lists the processes, on the ports if any are given. unlisted
+	// says that a holder found on them was still missing from the list
+	// after it was read again.
+	lookup := func() (items []picker.Item, found port.Result, unlisted bool, err error) {
 		procs, err := proc.List(os.Getpid())
 		if err != nil {
-			return nil, err
+			return nil, found, false, err
 		}
 		if len(opts.ports) > 0 {
 			// A process that took a port after the list was read is
@@ -282,24 +281,34 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 			// whose PID was reused is not taken from an earlier lookup.
 			for attempt := 0; ; attempt++ {
 				if found, err = findPorts(opts.ports); err != nil {
-					return nil, fmt.Errorf("finding the processes on the ports: %w", err)
+					return nil, found, false, fmt.Errorf("finding the processes on the ports: %w", err)
 				}
 				if unlisted = missesAny(procs, found.PIDs); !unlisted || attempt == 3 {
 					break
 				}
 				if procs, err = proc.List(os.Getpid()); err != nil {
-					return nil, err
+					return nil, found, false, err
 				}
 			}
 			procs = slices.DeleteFunc(procs, func(p proc.Process) bool { return !found.PIDs[p.PID] })
 		}
-		items := make([]picker.Item, len(procs))
+		items = make([]picker.Item, len(procs))
 		for i, p := range procs {
 			items[i] = picker.Item{ID: p.Identity, Text: p.Raw, Frozen: p.Frozen}
 		}
-		return items, nil
+		return items, found, unlisted, nil
 	}
-	items, err := list()
+	// list is the listing Ctrl-R reads again, with a note on what the
+	// ports' listing leaves out, as the reports below give it as kil starts.
+	list := func() (ui.Listing, error) {
+		items, found, unlisted, err := lookup()
+		listing := ui.Listing{Items: items}
+		if len(opts.ports) > 0 {
+			listing.Note = portNote(opts.ports, found, unlisted, len(items) == 0)
+		}
+		return listing, err
+	}
+	items, found, unlisted, err := lookup()
 	if err != nil {
 		reportf(stderr, "kil: failed to list processes: %v; nothing was signalled\n", err)
 		return exitError
@@ -324,7 +333,7 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	defer in.close()
 
 	sent := &batches{timeout: opts.timeout}
-	model, err := pick(ui.New(items, opts.query, label, list).WithExact(opts.exact || envExact).WithSender(sender(sent, sig, in)), in)
+	model, err := pick(ui.New(items, opts.query, label, list).WithNote(portNote(opts.ports, found, unlisted, false)).WithExact(opts.exact || envExact).WithSender(sender(sent, sig, in)), in)
 	if err != nil {
 		return pickFailed(sent, err, stdout, stderr, in)
 	}
@@ -905,17 +914,10 @@ func killRest(targets []waited, timeout time.Duration, stdout, stderr io.Writer,
 // their users, so that such a port is not taken for a free one.
 func hiddenOnPorts(ports []int, found port.Result, stderr io.Writer) {
 	for _, p := range ports {
-		uids := found.Hidden[p]
-		if len(uids) == 0 {
+		if len(found.Hidden[p]) == 0 {
 			continue
 		}
-		names := make([]string, len(uids))
-		for i, uid := range uids {
-			names[i] = "uid " + strconv.Itoa(uid)
-			if u, err := user.LookupId(strconv.Itoa(uid)); err == nil {
-				names[i] = u.Username
-			}
-		}
+		names := userNames(found.Hidden[p])
 		// The socket's user made the socket, which a process of another
 		// user may hold now, so it is not named as the holder's.
 		who := "a socket of user " + names[0]
@@ -969,4 +971,72 @@ func portNames(ports []int, names ...string) string {
 		return "port " + names[0]
 	}
 	return "ports " + strings.Join(names, ", ")
+}
+
+// portNote tells the picker's info line what the listing of ports leaves
+// out, as kil reports it as it starts, in one line. What to do comes first,
+// for every part at once, so that a narrow terminal cuts the details, which
+// list ports, rather than that. empty says that nothing on the ports was
+// listed.
+func portNote(ports []int, found port.Result, unlisted, empty bool) string {
+	var actions, details []string
+	add := func(action, detail string) {
+		if !slices.Contains(actions, action) {
+			actions = append(actions, action)
+		}
+		details = append(details, detail)
+	}
+	var held []int
+	var users []string
+	for _, p := range ports {
+		if len(found.Hidden[p]) == 0 {
+			continue
+		}
+		held = append(held, p)
+		for _, name := range userNames(found.Hidden[p]) {
+			if !slices.Contains(users, name) {
+				users = append(users, name)
+			}
+		}
+	}
+	if len(held) > 0 {
+		slices.Sort(users)
+		// One process may hold several ports, so the note does not count
+		// the holders.
+		sockets := "socket"
+		if len(held) > 1 || len(users) > 1 {
+			sockets = "sockets"
+		}
+		add("try sudo", fmt.Sprintf("kil cannot see what holds %s (%s of %s)", portNames(held), sockets, strings.Join(users, ", ")))
+	}
+	if unlisted {
+		add("Ctrl-R again", "a holder of "+portNames(ports)+" was not in the process list")
+	}
+	if empty && !unlisted && found.MayMiss {
+		var free []int
+		for _, p := range ports {
+			if len(found.Hidden[p]) == 0 {
+				free = append(free, p)
+			}
+		}
+		if len(free) > 0 {
+			add("try sudo", "no process kil can see holds "+portNames(free))
+		}
+	}
+	if len(actions) == 0 {
+		return ""
+	}
+	return strings.Join(actions, ", ") + ": " + strings.Join(details, "; ")
+}
+
+// userNames names the users uids give, or the uids that have no user.
+func userNames(uids []int) []string {
+	names := make([]string, len(uids))
+	for i, uid := range uids {
+		names[i] = "uid " + strconv.Itoa(uid)
+		if u, err := user.LookupId(strconv.Itoa(uid)); err == nil {
+			names[i] = u.Username
+		}
+	}
+	return names
 }

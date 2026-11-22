@@ -48,7 +48,7 @@ func fieldsEnd(text []rune, n int) int {
 // plain strips colors, so tests about content need not know the palette.
 func plain(view string) string { return ansi.Strip(view) }
 
-func noReload() ([]picker.Item, error) { return nil, nil }
+func noReload() (Listing, error) { return Listing{}, nil }
 
 func press(m Model, keys ...Msg) (Model, Cmd) {
 	var cmd Cmd
@@ -179,7 +179,7 @@ func TestAltASelectsEveryShownRow(t *testing.T) {
 }
 
 func TestCtrlRReloadsTheList(t *testing.T) {
-	reload := func() ([]picker.Item, error) { return items("101 node a", "404 go d"), nil }
+	reload := func() (Listing, error) { return Listing{Items: items("101 node a", "404 go d")}, nil }
 	m := sized(New(items("101 node a"), "", "SIGKILL", reload))
 	m, cmd := press(m, ctrl('r'))
 	if cmd == nil {
@@ -193,7 +193,7 @@ func TestCtrlRReloadsTheList(t *testing.T) {
 }
 
 func TestFailedReloadEndsWithoutTargets(t *testing.T) {
-	reload := func() ([]picker.Item, error) { return nil, errors.New("ps failed") }
+	reload := func() (Listing, error) { return Listing{Items: nil}, errors.New("ps failed") }
 	m := sized(New(items("101 node a"), "", "SIGKILL", reload))
 	m, _ = press(m, key(KeyTab))
 	m, cmd := press(m, ctrl('r'))
@@ -714,7 +714,7 @@ func TestOneLineTerminalDrawsOnlyThePrompt(t *testing.T) {
 // A selected process that exited stays on screen after Ctrl-R, so the total
 // counts it too; otherwise more rows are shown than the total.
 func TestInfoLineCountsKeptSelectionsInTheTotal(t *testing.T) {
-	reload := func() ([]picker.Item, error) { return items("202 python b"), nil }
+	reload := func() (Listing, error) { return Listing{Items: items("202 python b")}, nil }
 	m := sized(New(items("101 node a", "202 python b"), "", "SIGKILL", reload))
 	m, cmd := press(m, key(KeyTab), ctrl('r'))
 	next, _ := m.Update(cmd())
@@ -1156,9 +1156,9 @@ func TestEnterRightAfterStartWaits(t *testing.T) {
 func TestEachRowWaitsOnlyForItself(t *testing.T) {
 	var r recorder
 	next := 200
-	reload := func() ([]picker.Item, error) {
+	reload := func() (Listing, error) {
 		next++
-		return items("100 proc", fmt.Sprintf("%d proc", next)), nil
+		return Listing{Items: items("100 proc", fmt.Sprintf("%d proc", next))}, nil
 	}
 	m := drawn(New(items("100 proc", "200 proc"), "", "SIGKILL", reload).WithSender(r.send), 80, 6)
 	m = settled(m)
@@ -1407,7 +1407,7 @@ func TestEnterThatWaitsSaysSo(t *testing.T) {
 // Enter pressed while Ctrl-R lists the processes again says so too, until
 // the list is read.
 func TestEnterDuringAReloadSaysSo(t *testing.T) {
-	m := sized(New(items("101 a"), "", "SIGKILL", func() ([]picker.Item, error) { return items("101 a"), nil }))
+	m := sized(New(items("101 a"), "", "SIGKILL", func() (Listing, error) { return Listing{Items: items("101 a")}, nil }))
 	m, cmd := press(m, ctrl('r'))
 	m, _ = press(m, key(KeyEnter))
 	if m.Outcome() != Running || !strings.Contains(infoText(m), "Enter ignored") {
@@ -1438,7 +1438,7 @@ func enterIgnored(t *testing.T, m Model) bool {
 // pressed during the reload is still ignored after it, as the info line
 // still says.
 func TestEnterIgnoredAcrossAReloadThatShowsASelection(t *testing.T) {
-	reload := func() ([]picker.Item, error) { return items(numberedLines(3)...), nil }
+	reload := func() (Listing, error) { return Listing{Items: items(numberedLines(3)...)}, nil }
 	m := drawn(New(items(numberedLines(30)...), "", "SIGKILL", reload), 80, 10)
 	m, _ = press(m, key(KeyTab, ModShift))
 	for range 20 {
@@ -1459,7 +1459,7 @@ func TestEnterIgnoredAcrossAReloadThatShowsASelection(t *testing.T) {
 // Once nothing holds Enter, an Enter ignored earlier is forgotten: a later
 // reload must not say Enter was ignored when it was not pressed.
 func TestEnterIgnoredIsForgottenOnceNothingHoldsIt(t *testing.T) {
-	m := New(items(numberedLines(30)...), "", "SIGKILL", func() ([]picker.Item, error) { return items(numberedLines(30)...), nil })
+	m := New(items(numberedLines(30)...), "", "SIGKILL", func() (Listing, error) { return Listing{Items: items(numberedLines(30)...)}, nil })
 	m = resized(m, 80, 10)
 	m, _ = press(m, alt('a'), key(KeyEnter), alt('a'))
 	if m.waiting() {
@@ -1533,5 +1533,111 @@ func TestTooNarrowForAPIDShowsNoRow(t *testing.T) {
 	}
 	if m, _ = press(m, key(KeyEnter)); m.Outcome() != Accepted {
 		t.Errorf("width 10, with room for the PID: Enter ended with %v, want Accepted", m.Outcome())
+	}
+}
+
+// reloaded presses Ctrl-R on m and hands it what reload returned.
+func reloaded(t *testing.T, m Model) Model {
+	t.Helper()
+	m, cmd := press(m, ctrl('r'))
+	if cmd == nil {
+		t.Fatal("Ctrl-R returned no command")
+	}
+	next, _ := m.Update(cmd())
+	return next
+}
+
+// The note of the first listing, as on a port held by a process kil cannot
+// see, is on the info line, after the counts, from the start.
+func TestNoteIsOnTheInfoLine(t *testing.T) {
+	m := sized(New(items("101 a"), "", "SIGKILL", noReload).WithNote("port 3000 is held elsewhere"))
+	if got := infoText(m); !strings.HasPrefix(strings.TrimSpace(got), "1/1 (0) port 3000 is held elsewhere ") {
+		t.Errorf("info line = %q, want the counts and then the note", got)
+	}
+}
+
+// Each Ctrl-R replaces the note with its listing's: a note appears when a
+// reload brings one and goes once a reload has none, with the rows it
+// lists, even none.
+func TestReloadReplacesTheNote(t *testing.T) {
+	listings := []Listing{
+		{Note: "port 3000 is held elsewhere"},
+		{Items: items("101 a")},
+	}
+	reload := func() (Listing, error) {
+		l := listings[0]
+		listings = listings[1:]
+		return l, nil
+	}
+	m := sized(New(items("101 a"), "", "SIGKILL", reload))
+	m = reloaded(t, m)
+	if got := infoText(m); !strings.Contains(got, "0/0 (0) port 3000 is held elsewhere") {
+		t.Errorf("info line after a reload with a note = %q, want the note beside no rows", got)
+	}
+	m = reloaded(t, m)
+	if got := infoText(m); strings.Contains(got, "held") || !strings.Contains(got, "1/1 (0)") {
+		t.Errorf("info line after a reload without a note = %q, want the row and no note", got)
+	}
+}
+
+// A note is drawn as rows are, with what could act on the terminal and
+// invalid UTF-8 shown as ?, so a user name cannot send escape sequences.
+func TestNoteIsCleaned(t *testing.T) {
+	m := sized(New(items("101 a"), "", "SIGKILL", noReload).WithNote("user \x1b[2Jx\u202ey\xffz"))
+	view := m.render()
+	if strings.Contains(view, "\x1b[2J") || strings.ContainsRune(view, '\u202e') {
+		t.Errorf("render() = %q, want the note's control characters replaced", view)
+	}
+	if got := infoText(m); !strings.Contains(got, "user ?[2Jx?y?z") {
+		t.Errorf("info line = %q, want the note with ? in place of control characters", got)
+	}
+}
+
+// The note comes after what the info line says of Enter, the counts, exact
+// matching, and a partial Enter, as those tell what Enter does, and a narrow
+// terminal cuts the note first.
+func TestNoteComesLastOnTheInfoLine(t *testing.T) {
+	var r recorder
+	m := resized(New(items("101 a"), "", "SIGKILL", noReload).WithNote("NOTE").WithSender(r.send), 60, 20)
+	m, _ = press(m, key(KeyTab), key(KeyEnter))
+	if got := strings.TrimSpace(infoText(m)); !strings.HasPrefix(got, "Enter ignored: rows just shown  1/1 (1) NOTE") {
+		t.Errorf("info line = %q, want the ignored Enter, the counts, and then the note", got)
+	}
+	m = drawn(New(items(numberedLines(30)...), "", "SIGKILL", noReload).WithExact(true).WithNote("NOTE").WithSender(r.send), 120, 24)
+	m, _ = press(m, alt('a'))
+	m = drawn(m, 120, 10)
+	m, _ = press(m, key(KeyEnter))
+	if got := strings.TrimSpace(infoText(m)); !strings.Contains(got, " [exact] sent ") || !strings.Contains(got, "Enter to send NOTE") {
+		t.Errorf("info line = %q, want [exact], the partial Enter, and then the note", got)
+	}
+}
+
+// A note too long for the terminal is cut at its edge, with no rule after it.
+func TestLongNoteIsCut(t *testing.T) {
+	m := drawn(New(items("101 a"), "", "SIGKILL", noReload).WithNote(strings.Repeat("n", 100)), 40, 20)
+	got := infoText(m)
+	if !strings.HasPrefix(got, "  1/1 (0) nnn") || width.String(got) > 40 || strings.Contains(got, "─") {
+		t.Errorf("info line = %q, want the note cut within 40 columns", got)
+	}
+}
+
+// The note belongs to the listing, so typing a query, selecting, and
+// resizing keep it.
+func TestNoteStaysUntilAReload(t *testing.T) {
+	m := sized(New(items("101 a", "202 b"), "", "SIGKILL", noReload).WithNote("NOTE"))
+	m, _ = press(m, typed("a"), key(KeyTab))
+	m = drawn(m, 70, 10)
+	if got := infoText(m); !strings.Contains(got, "1/2 (1) NOTE") {
+		t.Errorf("info line = %q, want the note kept", got)
+	}
+}
+
+// A terminal of two lines has no info line, so it shows no note, and keeps
+// its row and its prompt.
+func TestNoNoteOnTwoLines(t *testing.T) {
+	m := drawn(New(items("101 a"), "", "SIGKILL", noReload).WithNote("NOTE"), 80, 2)
+	lines := viewLines(m)
+	if len(lines) != 2 || strings.Contains(plain(m.render()), "NOTE") || !strings.Contains(lines[0], "101 a") {
+		t.Errorf("render() = %q, want the row and the prompt without the note", lines)
 	}
 }

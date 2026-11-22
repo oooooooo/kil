@@ -289,5 +289,15 @@ Using fzf is fine, and so is writing it from scratch in Go.
   `/proc/net` gives, rather than as free; that user made the socket and need not
   be the holder's, so the report does not name it as the holder's. A process
   that took the port after the process list was read is missing from the list,
-  so kil reads the list again, a few times at most. lsof is run for 50 ports at
-  a time, as lsof on macOS takes at most 100 `-i` selectors.
+  so kil reads the list again, a few times at most. What it reports of either,
+  and of a listing left empty where other users' processes are not found without
+  root, it also says on the picker's info line, from the last listing, so that a
+  `Ctrl-R` that finds only such holders explains the empty list: what kil wrote
+  before the picker is under it, and the reload gave only the rows. The note
+  comes after the counts, as the rest tells what `Enter` does, and it starts
+  with what to do for all of its parts, as `try sudo, Ctrl-R again:`, before the
+  details, which list ports, so that on 80 columns the details are cut rather
+  than that: each part starting with its own action left the second action after
+  the first part's ports. It does not count the holders, as one process may hold
+  several ports. lsof is run for 50 ports at a time, as lsof on macOS takes at
+  most 100 `-i` selectors.

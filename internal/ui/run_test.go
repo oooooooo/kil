@@ -537,31 +537,86 @@ func TestARowTakenAlwaysShowsItsPID(t *testing.T) {
 	}
 }
 
-// A cluster of no width, as a zero-width space, is not drawn, as kil lays
-// rows and the prompt out without a cell for it: given a cell of its own,
-// each pushed the rest of the line right, past the edge with the caret, and
-// sent with the cell after it, one a terminal measures otherwise, as glibc
-// gives a soft hyphen a column, moved the terminal's cursor apart from
-// tcell's.
-func TestZeroWidthClustersAreNotDrawn(t *testing.T) {
+// A cluster of no width that reaches the screen, as in a row that did not
+// come from ps, which replaces them, is not drawn, as kil lays rows out
+// without a cell for it: given a cell of its own, each pushed the rest of the
+// line right, past the edge, and sent with the cell after it, one a terminal
+// measures otherwise, as glibc gives a soft hyphen a column, moved the
+// terminal's cursor apart from tcell's.
+func TestZeroWidthClustersInARowAreNotDrawn(t *testing.T) {
+	m := New(items("101 "+strings.Repeat("\u200b", 30)+"a\u00adbc"), "", "SIGKILL", noReload)
+	m, _ = press(m, WindowSizeMsg{Width: 20, Height: 5})
+	s := simScreen(t)
+	s.SetSize(20, 5)
+	draw(s, m)
+	for x, want := range []string{"1", "0", "1", " ", "a", "b", "c"} {
+		if got, _, _ := s.Get(2+x, 1); got != want {
+			t.Errorf("cell %d of the row = %+q, want %q", x, got, want)
+		}
+	}
+}
+
+// In the query, clusters of no width are drawn as placeholders of a column
+// each, so a query of many fits the prompt, with its caret and the end.
+func TestZeroWidthClustersInTheQueryFitTheScreen(t *testing.T) {
 	m := New(items("101 a"), strings.Repeat("\u200b", 30)+"a\u00adbc", "SIGKILL", noReload)
 	m, _ = press(m, WindowSizeMsg{Width: 20, Height: 5})
 	s := simScreen(t)
 	s.SetSize(20, 5)
 	draw(s, m)
-	reversed := false
+	var prompt strings.Builder
 	for x := range 20 {
-		_, st, _ := s.Get(x, 4)
-		if _, _, attr := st.Decompose(); attr&tcell.AttrReverse != 0 {
-			reversed = true
+		str, _, _ := s.Get(x, 4)
+		prompt.WriteString(str)
+	}
+	if want := "> " + strings.Repeat("?", 13) + "a?bc "; prompt.String() != want {
+		t.Errorf("prompt = %q, want %q", prompt.String(), want)
+	}
+	if _, st, _ := s.Get(19, 4); func() bool { _, _, a := st.Decompose(); return a&tcell.AttrReverse == 0 }() {
+		t.Errorf("no caret drawn at the end of the prompt")
+	}
+}
+
+// The placeholder for a cluster of no width in the query reaches the screen
+// underlined, so that it is told from a typed "?" even without colors, and
+// colored where there are colors.
+func TestZeroWidthPlaceholderIsDrawnUnderlined(t *testing.T) {
+	for _, colors := range []bool{true, false} {
+		s := simScreen(t)
+		m := New(items("101 a"), "?\u200b", "SIGKILL", noReload)
+		m, _ = press(m, WindowSizeMsg{Width: 80, Height: 24})
+		var screen tcell.Screen = s
+		if !colors {
+			screen = colorless{s}
+		}
+		draw(screen, m)
+		typed, _, _ := s.Get(2, 23)
+		_, typedStyle, _ := s.Get(2, 23)
+		shown, shownStyle, _ := s.Get(3, 23)
+		_, _, typedAttr := typedStyle.Decompose()
+		fg, _, attr := shownStyle.Decompose()
+		if typed != "?" || shown != "?" || typedAttr&tcell.AttrUnderline != 0 || attr&tcell.AttrUnderline == 0 {
+			t.Errorf("colors %v: cells %q (attributes %v) and %q (attributes %v); want a plain typed ? and an underlined placeholder", colors, typed, typedAttr, shown, attr)
+		}
+		if colors != (fg == tcell.PaletteColor(colorPointer)) {
+			t.Errorf("colors %v: placeholder foreground %v", colors, fg)
 		}
 	}
-	if !reversed {
-		t.Errorf("no caret drawn in the prompt %+q", plain(promptLine(m)))
-	}
-	for x, want := range []string{"a", "b", "c"} {
-		if got, _, _ := s.Get(2+x, 4); got != want {
-			t.Errorf("cell %d of the query = %+q, want %q", x, got, want)
+}
+
+// The caret covers its whole cluster, every placeholder in it included, as a
+// letter followed by two ZWNJs, which the caret moves over at once.
+func TestCaretCoversEveryPlaceholderOfItsCluster(t *testing.T) {
+	s := simScreen(t)
+	m := New(items("101 a"), "a\u200c\u200cb", "SIGKILL", noReload)
+	m, _ = press(m, WindowSizeMsg{Width: 80, Height: 24}, ctrl('a'))
+	draw(s, m)
+	for x, want := range []string{"a", "?", "?", "b"} {
+		got, st, _ := s.Get(2+x, 23)
+		_, _, attr := st.Decompose()
+		reversed := attr&tcell.AttrReverse != 0
+		if got != want || reversed != (x < 3) {
+			t.Errorf("cell %d = %q, reversed %v; want %q, reversed %v", x, got, reversed, want, x < 3)
 		}
 	}
 }

@@ -70,11 +70,16 @@ Using fzf is fine, and so is writing it from scratch in Go.
   without a cell for it: given one, each pushed the line right, and the caret
   past the edge, and sent to the terminal with the cell after it, one the
   terminal measures otherwise, as glibc gives a soft hyphen a column, moved the
-  terminal's cursor apart from tcell's. A caret on such a cluster is drawn as a
-  space, so that it shows. A word key finds the clusters once, not at each step,
-  which took seconds on a pasted query. tview, rustyline, and reedline also edit
-  by grapheme cluster; fzf and bubbles edit by code point, readline skips
-  zero-width characters, and fish skips them only on `Backspace`.
+  terminal's cursor apart from tcell's. In the query, such a cluster, and what
+  a ps line shows as `?` for the same reason, is drawn as a `?`, underlined
+  and colored, in a cell of its own, so that a query with
+  one, which matches otherwise, does not look like one without it, nor like
+  one with a `?` typed; the underline tells them apart without colors too.
+  zsh and vim show such characters as a placeholder as well. A word key finds
+  the clusters once, not at each step, which took seconds on a pasted query.
+  tview, rustyline, and reedline also edit by grapheme cluster; fzf and
+  bubbles edit by code point, readline skips zero-width characters, and fish
+  skips them only on `Backspace`.
 - The query is edited with readline's keys, so `Ctrl-A` moves to the start of
   the query and `Ctrl-K` deletes to its end, as in a shell. Select-all
   therefore moved from `Ctrl-A` to `Alt-A`, and moving up is `Up` / `Ctrl-P`
@@ -204,16 +209,51 @@ Using fzf is fine, and so is writing it from scratch in Go.
   pidfd's protection against a reused PID wherever it has it.
 - Control characters, invalid UTF-8, bidirectional controls, and the line and
   paragraph separators in a ps line become `?`, both when the line is read and
-  when a row is drawn. procps does this on Linux except for the last two
-  kinds, but ps on macOS and FreeBSD can print a command as it is, so a
-  process could repaint the terminal, as CVE-2008-5076 in htop and
-  CVE-2026-90773 in procs did, or make its command line read as another one.
-  tcell writes control characters to the terminal as they are, and kil's
-  drawing reads its colors from escape sequences in the rendered text, so rows
-  are cleaned again where they are drawn. The identity the check before
-  signalling compares keeps the characters shown as `?`: built from the
-  cleaned line, it took a command line changed from one bidirectional control
-  to another for the same process.
+  when a row is drawn. procps does this on Linux except for the last two kinds,
+  but ps on macOS and FreeBSD can print a command as it is, so a process could
+  repaint the terminal, as CVE-2008-5076 in htop and CVE-2026-90773 in procs
+  did, or make its command line read as another one. tcell writes control
+  characters to the terminal as they are, and kil's drawing reads its colors
+  from escape sequences in the rendered text, so rows are cleaned again where
+  they are drawn. The identity the check before signalling compares keeps the
+  characters shown as `?`: built from the cleaned line, it took a command line
+  changed from one bidirectional control to another for the same process. What
+  the terminal would not show becomes `?` too, when the line is read, before the
+  columns are laid out: a grapheme cluster of no width, as U+200B ZERO WIDTH
+  SPACE, U+00AD SOFT HYPHEN, or a combining mark with nothing to combine with,
+  and a default-ignorable character joined to the one before it, as U+200C ZERO
+  WIDTH NON-JOINER, a ZWJ, a variation selector, or a tag character after a
+  letter, which hides in that letter's cell. A command line with one looked like
+  one without it, which matching tells apart, and tag characters could hide any
+  ASCII text. Those that change how their cluster is drawn, as UTS #55 asks, are
+  kept: the ZWJ between two emoji, VS15 or VS16 right after an emoji or between
+  a keycap base and U+20E3, a selector of an ideographic variant right after an
+  ideograph, and the tags of the three flags Unicode recommends. Any other tags
+  after U+1F3F4 draw as the black flag alone, so they could hide text, and any
+  other variation selector is shown, even one of a symbol's standardized
+  variants, as U+2229 U+FE00, which kil does not tell from one that hides. A
+  selector kept before another one in a keycap no longer joined U+20E3 once the
+  other showed as `?`, so reading the line again showed it otherwise. Marks that
+  start a cluster, and that only a spacing mark after a character shown as `?`
+  gave a width, become `?` as well, for the same reason. A ZWJ after a character
+  shown as `?` in its cluster is a `?` too, as what it joined no longer shows as
+  it did, but only up to the next emoji, which starts a pair that still shows as
+  it did. Only U+FE00 to U+FE02 and the supplementary selectors vary an
+  ideograph, so a Mongolian selector after one is a `?`. A ZWJ between two emoji
+  is kept even where Unicode recommends no such sequence and a terminal draws
+  the two apart, as telling them apart needs Unicode's list of sequences. In the
+  query, a cluster with marks is laid out a cell at a time, so that one wider
+  than the prompt is cut at its edge rather than leave it, and the caret's
+  cluster is laid out before the text before it. A ZWNJ in Persian, a ZWJ in
+  Devanagari, and a Mongolian variation selector show as `?`, as they cannot be
+  told from ones that hide. Reveal checks a keycap's selector against its
+  neighbours alone and finds a flag once for each cluster: searching the cluster
+  at each character, as it once did for a keycap, took seconds on the variation
+  selectors an argument can hold. ps, fzf, htop, and procs send such characters
+  as they are; vim shows them as `<200b>`. kil matches the line as shown, so
+  `zz?q` typed matches such a line, and a query with U+200B matches no ps line.
+  uniseg does not export Extended_Pictographic, so kil asks it whether a
+  character joins an emoji after a ZWJ, as only such a character does.
 - Characters of ambiguous East Asian width, such as `·`, `─`, `│`, `▌`, and
   `┃`, count as one column unless `RUNEWIDTH_EASTASIAN=1`, as fzf and
   go-runewidth read it, says the terminal draws them as two. Counted as one on

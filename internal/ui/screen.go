@@ -310,6 +310,13 @@ func applySGR(st tcell.Style, params string, colored bool) tcell.Style {
 			st = tcell.StyleDefault
 		case "1":
 			st = st.Bold(true)
+		case "4":
+			// The placeholder for a cluster of no width in the query.
+			st = st.Underline(true)
+		case "24":
+			st = st.Underline(false)
+		case "39":
+			st = st.Foreground(tcell.ColorDefault)
 		case "7":
 			// The caret: kil hides the terminal's cursor and draws its own.
 			st = st.Reverse(true)

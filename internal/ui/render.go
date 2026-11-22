@@ -308,59 +308,110 @@ func (m Model) promptText() string {
 	r := m.input.runes
 	pos := m.input.pos
 	end := m.input.next(pos)
-	caret := " "
+	caret := []promptCell{{" ", 1}}
 	if pos < len(r) {
-		caret = string(r[pos:end])
+		caret = promptCells(string(r[pos:end]))
 	}
-	// A caret too wide for the prompt, as an ambiguous-width character
-	// drawn wide on a terminal of three columns, is drawn as a space, so
-	// that the caret still shows. So is a caret of no width, as a
-	// zero-width space, which takes no cell of its own.
-	if w := termwidth.String(caret); w == 0 || w > max(m.width-2, 1) {
-		caret = " "
+	// The caret's cluster is laid out first, so that text before it cannot
+	// push it off. One wider than the prompt, as a letter with many
+	// placeholders, is cut; one too wide even for its first cell, as an
+	// ambiguous-width character drawn wide on a terminal of three columns,
+	// is drawn as a space, so that the caret still shows.
+	room := max(m.width-2, 1) // after "> "
+	if caret = firstCells(caret, room); len(caret) == 0 {
+		caret = []promptCell{{" ", 1}}
 	}
-	room := max(m.width-2, 1) - termwidth.String(caret) // after "> "
-	before := lastClusters(string(r[:pos]), room)
-	after := ""
+	room -= cellsWidth(caret)
+	before := lastCells(promptCells(string(r[:pos])), room)
+	room -= cellsWidth(before)
+	var after []promptCell
 	if pos < len(r) {
-		after = firstClusters(string(r[end:]), room-termwidth.String(before))
+		after = firstCells(promptCells(string(r[end:])), room)
 	}
-	return bold + before + reset + "\x1b[7m" + caret + reset + bold + after + reset
+	return bold + joinCells(before) + reset + "\x1b[7m" + joinCells(caret) + reset + bold + joinCells(after) + reset
 }
 
-// firstClusters returns the longest prefix of s, cut between grapheme
-// clusters, that fits within width columns.
-func firstClusters(s string, width int) string {
-	end, used := 0, 0
-	g := uniseg.NewGraphemes(s)
-	for g.Next() {
-		w := termwidth.String(g.Str())
-		if used+w > width {
-			break
+// A promptCell is a grapheme cluster of the query as the prompt draws it.
+type promptCell struct {
+	text  string
+	width int
+}
+
+// zeroWidthPlaceholder stands in the prompt for what the terminal would not
+// show, as a zero-width space, which the screen does not draw, or a ZWNJ
+// after a letter: the query then looked like one without it, which matches
+// otherwise. It is underlined, so that it is told from a typed "?" without
+// colors too. After it, only the underline and the color are undone, so that
+// the prompt's bold and the caret's reverse video go on over the rest of the
+// cluster.
+var zeroWidthPlaceholder = "\x1b[4m" + fg(colorPointer) + "?" + "\x1b[24m\x1b[39m"
+
+// promptCells splits s into the cells the prompt draws it in: a grapheme
+// cluster each, and a placeholder for each character Reveal marks, so that a
+// cluster with many is cut at the edge as letters are.
+func promptCells(s string) []promptCell {
+	var cells []promptCell
+	termwidth.RevealEach(s, func(text string, marked bool) {
+		if marked {
+			cells = append(cells, promptCell{zeroWidthPlaceholder, 1})
+			return
 		}
-		used += w
-		_, end = g.Positions()
-	}
-	return s[:end]
+		state := -1
+		for text != "" {
+			var g string
+			var w int
+			g, text, w, state = uniseg.FirstGraphemeClusterInString(text, state)
+			// A mark after a placeholder combines with no cell, as the
+			// placeholder's colors part them.
+			if w == 0 {
+				g, w = zeroWidthPlaceholder, 1
+			}
+			cells = append(cells, promptCell{g, w})
+		}
+	})
+	return cells
 }
 
-// lastClusters returns the longest suffix of s, cut between grapheme
-// clusters, that fits within width columns.
-func lastClusters(s string, width int) string {
-	var starts []int
-	var ws []int
-	g := uniseg.NewGraphemes(s)
-	for g.Next() {
-		from, _ := g.Positions()
-		starts = append(starts, from)
-		ws = append(ws, termwidth.String(g.Str()))
+func cellsWidth(cells []promptCell) int {
+	w := 0
+	for _, c := range cells {
+		w += c.width
 	}
-	start, used := len(s), 0
-	for i := len(ws) - 1; i >= 0 && used+ws[i] <= width; i-- {
-		used += ws[i]
-		start = starts[i]
+	return w
+}
+
+func joinCells(cells []promptCell) string {
+	var b strings.Builder
+	for _, c := range cells {
+		b.WriteString(c.text)
 	}
-	return s[start:]
+	return b.String()
+}
+
+// firstCells returns the longest prefix of cells that fits within width
+// columns.
+func firstCells(cells []promptCell, width int) []promptCell {
+	used := 0
+	for i, c := range cells {
+		if used+c.width > width {
+			return cells[:i]
+		}
+		used += c.width
+	}
+	return cells
+}
+
+// lastCells returns the longest suffix of cells that fits within width
+// columns.
+func lastCells(cells []promptCell, width int) []promptCell {
+	used := 0
+	for i := len(cells) - 1; i >= 0; i-- {
+		if used+cells[i].width > width {
+			return cells[i+1:]
+		}
+		used += cells[i].width
+	}
+	return cells
 }
 
 func (m Model) infoLine(shown int) string {

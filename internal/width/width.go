@@ -102,8 +102,12 @@ func RevealEach(s string, each func(text string, marked bool)) {
 		flag := flagTags(rs)
 		marked, from := false, 0
 		for i, r := range rs {
-			// A ZWJ after any mark in its cluster is marked too: what it
-			// joins to the emoji after it no longer shows as it did.
+			// A ZWJ after a mark is marked too, as what it joins to the
+			// emoji after it no longer shows as it did, until an emoji
+			// starts a sequence that shows again.
+			if marked && !ignorable(r) && pictographic(r) {
+				marked = false
+			}
 			if ignorable(r) && (marked && r == '\u200D' || !drawsWith(rs, i, flag)) {
 				if from < i {
 					// Marks that start the cluster combine with nothing
@@ -163,7 +167,7 @@ func drawsWith(rs []rune, i int, flag bool) bool {
 			keycap := i+1 < len(rs) && rs[i+1] == '\u20E3' && strings.ContainsRune("0123456789#*", prev)
 			return pictographic(prev) || keycap
 		}
-		return unicode.Is(unicode.Ideographic, prev) && (r <= '\uFE02' || r >= 0xE0100)
+		return unicode.Is(unicode.Ideographic, prev) && (r >= '\uFE00' && r <= '\uFE02' || r >= 0xE0100)
 	case r >= 0xE0020 && r <= 0xE007F:
 		return flag
 	}

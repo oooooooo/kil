@@ -360,6 +360,22 @@ func TestParseReplacesZeroWidthClusters(t *testing.T) {
 
 // Marks at the start of a command line that only a spacing mark after an
 // invisible character gave a width show as "?", as without that character.
+// An emoji pair after a character shown as "?" in the same cluster shows as
+// it did, and a Mongolian variation selector after an ideograph, which varies
+// nothing, is a "?".
+func TestParseKeepsEmojiPairsAfterAMark(t *testing.T) {
+	listing := "  101     1 alice    x \U0001F600\u200c\u200d\U0001F600\u200d\U0001F600 \u845b\u180b\n"
+	names := "  101     1 zz\n"
+	got, err := Parse(listing, names)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "x \U0001F600??\U0001F600\u200d\U0001F600 \u845b?"
+	if len(got) != 1 || got[0].Args != want {
+		t.Fatalf("Parse() = %+v, want Args %+q", got, want)
+	}
+}
+
 func TestParseRevealsMarksBeforeAnInvisibleCharacter(t *testing.T) {
 	listing := "  101     1 alice    \u0301\u200c\u0e33 x\n"
 	names := "  101     1 zz\n"

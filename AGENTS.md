@@ -230,25 +230,30 @@ Using fzf is fine, and so is writing it from scratch in Go.
   a keycap base and U+20E3, a selector of an ideographic variant right after an
   ideograph, and the tags of the three flags Unicode recommends. Any other tags
   after U+1F3F4 draw as the black flag alone, so they could hide text, and any
-  other variation selector varies nothing: one kept before another selector in a
-  keycap no longer joined U+20E3 once that selector showed as `?`, so reading
-  the line again showed it otherwise. Marks that start a cluster, and that only
-  a spacing mark after a character shown as `?` gave a width, become `?` as
-  well, for the same reason. A ZWJ between two emoji is kept even where Unicode
-  recommends no such sequence and a terminal draws the two apart, as telling
-  them apart needs Unicode's list of sequences. In the query, a cluster with
-  marks is laid out a cell at a time, so that one wider than the prompt is cut
-  at its edge rather than leave it, and the caret's cluster is laid out before
-  the text before it. A ZWNJ in Persian, a ZWJ in Devanagari, and a Mongolian
-  variation selector show as `?`, as they cannot be told from ones that hide.
-  Reveal checks a keycap's selector against its neighbours alone and finds a
-  flag once for each cluster: searching the cluster at each character, as it
-  once did for a keycap, took seconds on the variation selectors an argument can
-  hold. ps, fzf, htop, and procs send such characters as they are; vim shows
-  them as `<200b>`. kil matches the line as shown, so `zz?q` typed matches such
-  a line, and a query with U+200B matches no ps line. uniseg does not export
-  Extended_Pictographic, so kil asks it whether a character joins an emoji after
-  a ZWJ, as only such a character does.
+  other variation selector is shown, even one of a symbol's standardized
+  variants, as U+2229 U+FE00, which kil does not tell from one that hides. A
+  selector kept before another one in a keycap no longer joined U+20E3 once the
+  other showed as `?`, so reading the line again showed it otherwise. Marks that
+  start a cluster, and that only a spacing mark after a character shown as `?`
+  gave a width, become `?` as well, for the same reason. A ZWJ after a character
+  shown as `?` in its cluster is a `?` too, as what it joined no longer shows as
+  it did, but only up to the next emoji, which starts a pair that still shows as
+  it did. Only U+FE00 to U+FE02 and the supplementary selectors vary an
+  ideograph, so a Mongolian selector after one is a `?`. A ZWJ between two emoji
+  is kept even where Unicode recommends no such sequence and a terminal draws
+  the two apart, as telling them apart needs Unicode's list of sequences. In the
+  query, a cluster with marks is laid out a cell at a time, so that one wider
+  than the prompt is cut at its edge rather than leave it, and the caret's
+  cluster is laid out before the text before it. A ZWNJ in Persian, a ZWJ in
+  Devanagari, and a Mongolian variation selector show as `?`, as they cannot be
+  told from ones that hide. Reveal checks a keycap's selector against its
+  neighbours alone and finds a flag once for each cluster: searching the cluster
+  at each character, as it once did for a keycap, took seconds on the variation
+  selectors an argument can hold. ps, fzf, htop, and procs send such characters
+  as they are; vim shows them as `<200b>`. kil matches the line as shown, so
+  `zz?q` typed matches such a line, and a query with U+200B matches no ps line.
+  uniseg does not export Extended_Pictographic, so kil asks it whether a
+  character joins an emoji after a ZWJ, as only such a character does.
 - Characters of ambiguous East Asian width, such as `·`, `─`, `│`, `▌`, and
   `┃`, count as one column unless `RUNEWIDTH_EASTASIAN=1`, as fzf and
   go-runewidth read it, says the terminal draws them as two. Counted as one on

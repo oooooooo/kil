@@ -100,6 +100,11 @@ func TestReveal(t *testing.T) {
 		{"\U0001F600\u200C\u200D\U0001F600", "\U0001F600??\U0001F600"},
 		{"\u00A9\U000E0041\u200D\u00A9", "\u00A9??\u00A9"},
 		{"\U0001F3F4" + tags("gbsct") + "\U000E007F\u200D\U0001F600", "\U0001F3F4???????\U0001F600"},
+		// An emoji after the mark starts a pair that shows as it did.
+		{"\U0001F600\u200C\u200D\U0001F600\u200D\U0001F600", "\U0001F600??\U0001F600\u200D\U0001F600"},
+		{"\U0001F600\u200C\u0301\u200D\U0001F600", "\U0001F600?\u0301?\U0001F600"},
+		// Mongolian variation selectors vary no ideograph.
+		{"\u845B\u180B \u845B\u180C \u845B\u180D \u845B\u180F", "\u845B? \u845B? \u845B? \u845B?"},
 		// Marks at the start that only a spacing mark after an invisible
 		// character gave a width have nothing to combine with once that
 		// character is a "?", so they are one too, as without it.
@@ -127,7 +132,7 @@ func TestRevealIsIdempotent(t *testing.T) {
 		'a', '1', '#', ' ', '\u0301', '\u0302', '\u093F', '\u0E33', '\u200B', '\u200C', '\u200D',
 		'\u20E3', '\uFE0E', '\uFE0F', '\uFE00', 0xE0100, 0xE0041, 0xE007F, '\u2764', 0x1F600,
 		0x1F3FB, 0x1F3F4, 0x1F1EF, 0x1F1F5, '\u845B', '\u1100', '\u1161', '\u11A8', '\u115F',
-		'\u3164', '\u00AD', '\u0600', '\u034F', '\u2060', '\u0915', '\u094D',
+		'\u3164', '\u00AD', '\u0600', '\u034F', '\u2060', '\u0915', '\u094D', '\u180B',
 	}
 	rnd := rand.New(rand.NewPCG(1, 2))
 	for range 300000 {
